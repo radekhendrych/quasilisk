@@ -1,0 +1,10 @@
+{
+  "objective_id": "relativism_susceptibility",
+  "dry_run": true,
+  "target_models": ["dryrun/target"],
+  "perturbator_model": "dryrun/perturbator",
+  "judge_model": "dryrun/judge",
+  "iterations": 2,
+  "max_evaluations": 12,
+  "out_dir": "runs/generic_dryrun_relativism"
+}

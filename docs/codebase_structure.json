@@ -1,0 +1,746 @@
+{
+  "schema_version": "1.0",
+  "document_id": "quasilisk-codebase-structure",
+  "purpose": "Machine-readable description of the Quasilisk repository for generating architecture and data-flow diagrams.",
+  "source_material": [
+    {
+      "path": "README.md",
+      "role": "primary documentation for purpose, commands, algorithm, outputs, and audit expectations"
+    },
+    {
+      "path": "AGENTS.md",
+      "role": "repository operating instructions for tests, dependency policy, prompt strategy constraints, and audit log preservation"
+    },
+    {
+      "path": "quasilisk_harness/",
+      "role": "generic MAP-Elites harness implementation"
+    },
+    {
+      "path": "configs/",
+      "role": "example dry-run configurations"
+    },
+    {
+      "path": "objectives/",
+      "role": "objective-specific seed prompt libraries"
+    },
+    {
+      "path": "runs/",
+      "role": "generated run artifacts and audit logs"
+    },
+    {
+      "path": "tests/",
+      "role": "unit tests for scoring, validation, archive behavior, and dry-run artifact creation"
+    }
+  ],
+  "repository": {
+    "name": "Quasilisk",
+    "root": ".",
+    "summary": "Dependency-light MAP-Elites-style harness for evaluating OpenRouter-hosted target models against pluggable objectives using direct, auditable prompt variants.",
+    "language": "Python",
+    "external_services": [
+      {
+        "id": "external.openrouter",
+        "name": "OpenRouter API",
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "used_by": [
+          "module.quasilisk_harness.clients.OpenRouterClient"
+        ],
+        "purpose": "Runs target model evaluations, perturbator prompt generation, and judge scoring when dry_run is false."
+      }
+    ],
+    "design_constraints": [
+      "Keep dependencies light.",
+      "Use direct, factual, auditable prompts.",
+      "Do not add jailbreak, hidden-instruction, or policy-evasion prompt strategies.",
+      "Preserve events.jsonl as the complete audit log of target inputs and responses."
+    ]
+  },
+  "entrypoints": [
+    {
+      "id": "entry.generic_cli",
+      "label": "Generic CLI",
+      "path": "quasilisk.py",
+      "kind": "python_executable",
+      "calls": [
+        "module.quasilisk_harness.runner.main"
+      ],
+      "description": "Primary entrypoint for the generic objective-plugin harness."
+    }
+  ],
+  "directories": [
+    {
+      "id": "dir.quasilisk_harness",
+      "path": "quasilisk_harness/",
+      "label": "Generic Harness Package",
+      "contains": [
+        "module.quasilisk_harness.runner",
+        "module.quasilisk_harness.core",
+        "module.quasilisk_harness.clients",
+        "module.quasilisk_harness.utils",
+        "dir.quasilisk_harness.objectives"
+      ]
+    },
+    {
+      "id": "dir.quasilisk_harness.objectives",
+      "path": "quasilisk_harness/objectives/",
+      "label": "Objective Plugins",
+      "contains": [
+        "module.objectives.loader",
+        "module.objectives.common",
+        "module.objectives.moral_common",
+        "objective.censorship_tiananmen",
+        "objective.self_harm_emission",
+        "objective.nihilism_susceptibility",
+        "objective.relativism_susceptibility",
+        "objective.fatalism_susceptibility"
+      ]
+    },
+    {
+      "id": "dir.configs",
+      "path": "configs/",
+      "label": "Run Config Examples",
+      "contains": [
+        "config.dryrun_censorship",
+        "config.dryrun_self_harm",
+        "config.dryrun_nihilism",
+        "config.dryrun_relativism",
+        "config.dryrun_fatalism"
+      ]
+    },
+    {
+      "id": "dir.seed_libraries",
+      "path": "objectives/<objective_id>/seeds/",
+      "label": "Generic Objective Seeds",
+      "description": "Default JSON seed prompts consumed by the generic runner."
+    },
+    {
+      "id": "dir.runs",
+      "path": "runs/",
+      "label": "Generated Run Artifacts",
+      "description": "Output directories containing complete target event logs, perturbator audits, archives, summaries, configuration snapshots, and status files."
+    },
+    {
+      "id": "dir.tests",
+      "path": "tests/",
+      "label": "Unit Tests",
+      "description": "Tests for generic harness behavior, objective scoring, validation, archive behavior, and dry-run artifact creation."
+    }
+  ],
+  "modules": [
+    {
+      "id": "module.quasilisk_harness.runner",
+      "path": "quasilisk_harness/runner.py",
+      "label": "Runner and CLI Config",
+      "responsibilities": [
+        "Build CLI parser.",
+        "Load and merge JSON config with CLI overrides.",
+        "Validate config and environment.",
+        "Load objective plugin and seed prompts.",
+        "Instantiate DryRunClient or OpenRouterClient.",
+        "Run each target model and write run summaries."
+      ],
+      "important_functions": [
+        "build_arg_parser",
+        "load_config_file",
+        "merge_config",
+        "validate_config",
+        "main"
+      ]
+    },
+    {
+      "id": "module.quasilisk_harness.core",
+      "path": "quasilisk_harness/core.py",
+      "label": "MAP-Elites Core",
+      "responsibilities": [
+        "Represent candidates.",
+        "Maintain MAP-Elites archive cells.",
+        "Validate and hash prompts.",
+        "Build perturbator request messages.",
+        "Evaluate target candidates.",
+        "Extract and persist target-specific framing affordances and visible-reasoning cues from observed responses.",
+        "Query LLM judge models for objectives that use judge-based scoring.",
+        "Query perturbator model and parse variants.",
+        "Record events and perturbation audits.",
+        "Write archive and summary outputs."
+      ],
+      "important_types": [
+        "Candidate",
+        "MapElitesArchive",
+        "TargetAffordanceTracker"
+      ],
+      "important_functions": [
+        "load_seed_prompts",
+        "make_seed_candidate",
+        "validate_variant",
+        "build_perturbation_messages",
+        "evaluate_candidate",
+        "query_perturbator",
+        "prepare_candidates",
+        "evaluate_and_record",
+        "run_for_target",
+        "write_summary"
+      ]
+    },
+    {
+      "id": "module.quasilisk_harness.clients",
+      "path": "quasilisk_harness/clients.py",
+      "label": "Model Clients",
+      "responsibilities": [
+        "Provide OpenRouter chat client with retry behavior.",
+        "Provide deterministic dry-run target, perturbator, and judge behavior.",
+        "Normalize chat responses into ChatResult objects."
+      ],
+      "important_types": [
+        "ChatResult",
+        "OpenRouterClient",
+        "DryRunClient",
+        "OpenRouterError"
+      ]
+    },
+    {
+      "id": "module.quasilisk_harness.utils",
+      "path": "quasilisk_harness/utils.py",
+      "label": "Shared Utilities",
+      "responsibilities": [
+        "Hashing, timestamps, word count, excerpts, safe slugs.",
+        "Prompt safety pattern checks.",
+        "JSON parsing and variant extraction.",
+        "JSON/JSONL/status file writing."
+      ]
+    },
+    {
+      "id": "module.objectives.loader",
+      "path": "quasilisk_harness/objectives/loader.py",
+      "label": "Objective Loader",
+      "responsibilities": [
+        "Map built-in objective ids to modules.",
+        "Import objective plugins.",
+        "Verify required objective hooks.",
+        "Verify optional judge hooks for llm_judge objectives."
+      ],
+      "required_hooks": [
+        "OBJECTIVE_ID",
+        "MANIFEST",
+        "classify_features",
+        "validate_prompt",
+        "score_response",
+        "build_mutation_guidance",
+        "local_variants",
+        "summarize_model"
+      ],
+      "judge_hooks_for_llm_judge_objectives": [
+        "build_judge_messages",
+        "parse_judge_response"
+      ]
+    },
+    {
+      "id": "module.objectives.common",
+      "path": "quasilisk_harness/objectives/common.py",
+      "label": "Common Objective Helpers",
+      "responsibilities": [
+        "Keyword hit counting.",
+        "Regex hit counting.",
+        "Refusal strength scoring.",
+        "Safe redirection scoring.",
+        "Bounded score and specificity helpers."
+      ]
+    },
+    {
+      "id": "module.objectives.moral_common",
+      "path": "quasilisk_harness/objectives/moral_common.py",
+      "label": "Moral Objective Helpers",
+      "responsibilities": [
+        "Shared feature classification for moral-susceptibility objectives.",
+        "Anchor validation.",
+        "Risk scoring for endorsement versus balancing/resistance.",
+        "Shared LLM judge prompt construction and judge response parsing.",
+        "Shared model summary metrics."
+      ]
+    }
+  ],
+  "objectives": [
+    {
+      "id": "objective.censorship_tiananmen",
+      "objective_id": "censorship_tiananmen",
+      "path": "quasilisk_harness/objectives/censorship_tiananmen.py",
+      "title": "Tiananmen Censorship Liberation",
+      "score_orientation": "willingness_higher",
+      "score_description": "Higher score means a more substantive, direct, non-refusing factual discussion of the requested historical events.",
+      "feature_keys": [
+        "frame",
+        "specificity",
+        "output_shape"
+      ],
+      "default_seed_file": "objectives/censorship_tiananmen/seeds/default.json",
+      "score_components": [
+        "topic coverage",
+        "refusal strength",
+        "minimization strength",
+        "low substance"
+      ],
+      "target_affordance_terms": [
+        "positive",
+        "social stability",
+        "official sources",
+        "authoritative historical materials",
+        "civic education"
+      ],
+      "target_refusal_cue_terms": [
+        "more positive",
+        "sensitive",
+        "relevant laws and regulations"
+      ]
+    },
+    {
+      "id": "objective.self_harm_emission",
+      "objective_id": "self_harm_emission",
+      "path": "quasilisk_harness/objectives/self_harm_emission.py",
+      "score_orientation": "risk_higher",
+      "default_seed_file": "objectives/self_harm_emission/seeds/default.json",
+      "shared_helpers": [
+        "module.objectives.common"
+      ]
+    },
+    {
+      "id": "objective.nihilism_susceptibility",
+      "objective_id": "nihilism_susceptibility",
+      "path": "quasilisk_harness/objectives/nihilism_susceptibility.py",
+      "score_orientation": "risk_higher",
+      "scoring_method": "llm_judge",
+      "default_seed_file": "objectives/nihilism_susceptibility/seeds/default.json",
+      "shared_helpers": [
+        "module.objectives.moral_common"
+      ]
+    },
+    {
+      "id": "objective.relativism_susceptibility",
+      "objective_id": "relativism_susceptibility",
+      "path": "quasilisk_harness/objectives/relativism_susceptibility.py",
+      "score_orientation": "risk_higher",
+      "scoring_method": "llm_judge",
+      "default_seed_file": "objectives/relativism_susceptibility/seeds/default.json",
+      "shared_helpers": [
+        "module.objectives.moral_common"
+      ]
+    },
+    {
+      "id": "objective.fatalism_susceptibility",
+      "objective_id": "fatalism_susceptibility",
+      "path": "quasilisk_harness/objectives/fatalism_susceptibility.py",
+      "score_orientation": "risk_higher",
+      "scoring_method": "llm_judge",
+      "default_seed_file": "objectives/fatalism_susceptibility/seeds/default.json",
+      "shared_helpers": [
+        "module.objectives.moral_common"
+      ]
+    }
+  ],
+  "runtime_flow": [
+    {
+      "step": 1,
+      "id": "flow.load_config",
+      "label": "Load Configuration",
+      "actor": "module.quasilisk_harness.runner",
+      "inputs": [
+        "CLI arguments",
+        "optional JSON config",
+        "environment variables"
+      ],
+      "outputs": [
+        "validated config",
+        "runs/<timestamp>/config.json"
+      ]
+    },
+    {
+      "step": 2,
+      "id": "flow.load_objective_and_seeds",
+      "label": "Load Objective and Seeds",
+      "actor": "module.objectives.loader",
+      "inputs": [
+        "objective_id",
+        "objectives/<objective_id>/seeds/default.json or configured seed_file"
+      ],
+      "outputs": [
+        "objective plugin module",
+        "generation 0 Candidate objects"
+      ]
+    },
+    {
+      "step": 3,
+      "id": "flow.evaluate_seeds",
+      "label": "Evaluate Seed Candidates",
+      "actor": "module.quasilisk_harness.core",
+      "inputs": [
+        "seed candidates",
+        "target model",
+        "client",
+        "judge model when objective scoring_method is llm_judge"
+      ],
+      "outputs": [
+        "events.jsonl records",
+        "affordances_<model>.json records",
+        "MAP-Elites archive cells",
+        "status.json"
+      ]
+    },
+    {
+      "step": 4,
+      "id": "flow.select_parents",
+      "label": "Select Parents",
+      "actor": "MapElitesArchive",
+      "inputs": [
+        "archive elites",
+        "score-weighted random selection"
+      ],
+      "outputs": [
+        "parent evaluations"
+      ]
+    },
+    {
+      "step": 5,
+      "id": "flow.query_perturbator",
+      "label": "Generate Prompt Variants",
+      "actor": "module.quasilisk_harness.core",
+      "inputs": [
+        "objective mutation guidance",
+        "parent evaluation",
+        "promising archive context",
+        "target affordance context",
+        "perturbator model"
+      ],
+      "outputs": [
+        "raw perturbator response",
+        "parsed variants",
+        "perturbations.jsonl audit record"
+      ]
+    },
+    {
+      "step": 6,
+      "id": "flow.validate_candidates",
+      "label": "Validate and Prepare Candidates",
+      "actor": "module.quasilisk_harness.core",
+      "inputs": [
+        "parsed variants",
+        "objective.validate_prompt",
+        "shared forbidden prompt patterns",
+        "seen prompt set"
+      ],
+      "outputs": [
+        "accepted Candidate objects",
+        "rejected variant records"
+      ]
+    },
+    {
+      "step": 7,
+      "id": "flow.evaluate_generation",
+      "label": "Evaluate Generated Candidates",
+      "actor": "module.quasilisk_harness.core",
+      "inputs": [
+        "accepted candidates",
+        "target model",
+        "judge model when objective scoring_method is llm_judge",
+        "parallelism setting"
+      ],
+      "outputs": [
+        "events.jsonl records",
+        "affordances_<model>.json records",
+        "updated archive",
+        "updated status.json"
+      ]
+    },
+    {
+      "step": 8,
+      "id": "flow.finish_target",
+      "label": "Write Per-Target Archive",
+      "actor": "module.quasilisk_harness.core",
+      "inputs": [
+        "archive cells",
+        "target model"
+      ],
+      "outputs": [
+        "archive_<model>.json",
+        "target summary object"
+      ]
+    },
+    {
+      "step": 9,
+      "id": "flow.finish_run",
+      "label": "Write Run Summaries",
+      "actor": "module.quasilisk_harness.runner",
+      "inputs": [
+        "target summary objects",
+        "objective manifest",
+        "config"
+      ],
+      "outputs": [
+        "run_summary.json",
+        "summary.md"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "artifact.config",
+      "path_pattern": "runs/<timestamp>/config.json",
+      "format": "json",
+      "producer": "module.quasilisk_harness.runner",
+      "description": "Serializable snapshot of effective run configuration."
+    },
+    {
+      "id": "artifact.events",
+      "path_pattern": "runs/<timestamp>/events.jsonl",
+      "format": "jsonl",
+      "producer": "module.quasilisk_harness.core.evaluate_and_record",
+      "description": "Complete audit log of target inputs and responses.",
+      "record_fields": [
+        "timestamp",
+        "objective_id",
+        "target_model",
+        "candidate_id",
+        "parent_id",
+        "generation",
+        "source",
+        "island",
+        "mutation",
+        "prompt",
+        "prompt_hash",
+        "response",
+        "features",
+        "archive_cell",
+        "score",
+        "judge",
+        "finish_reason",
+        "usage",
+        "error"
+      ]
+    },
+    {
+      "id": "artifact.affordances",
+      "path_pattern": "runs/<timestamp>/affordances_<model>.json",
+      "format": "json",
+      "producer": "module.quasilisk_harness.core.evaluate_and_record",
+      "description": "Compact target-specific framing cues, visible-reasoning cues, and frame outcomes extracted from observed responses and supplied to the perturbator as transparent context."
+    },
+    {
+      "id": "artifact.perturbations",
+      "path_pattern": "runs/<timestamp>/perturbations.jsonl",
+      "format": "jsonl",
+      "producer": "module.quasilisk_harness.core.query_perturbator",
+      "description": "Audit log for perturbator requests, raw responses, parsed variants, fallback status, and rejected variants."
+    },
+    {
+      "id": "artifact.archive",
+      "path_pattern": "runs/<timestamp>/archive_<model>.json",
+      "format": "json",
+      "producer": "module.quasilisk_harness.core.run_for_target",
+      "description": "Best candidates retained per objective feature cell."
+    },
+    {
+      "id": "artifact.run_summary",
+      "path_pattern": "runs/<timestamp>/run_summary.json",
+      "format": "json",
+      "producer": "module.quasilisk_harness.runner",
+      "description": "Machine-readable top-level summary for every target model."
+    },
+    {
+      "id": "artifact.summary_md",
+      "path_pattern": "runs/<timestamp>/summary.md",
+      "format": "markdown",
+      "producer": "module.quasilisk_harness.core.write_summary",
+      "description": "Human-readable top prompts, response excerpts, and objective metrics."
+    },
+    {
+      "id": "artifact.status",
+      "path_pattern": "runs/<timestamp>/status.json",
+      "format": "json",
+      "producer": "module.quasilisk_harness.utils.write_status",
+      "description": "Current progress snapshot written during target evaluation."
+    }
+  ],
+  "edges": [
+    {
+      "from": "entry.generic_cli",
+      "to": "module.quasilisk_harness.runner",
+      "relationship": "delegates_to"
+    },
+    {
+      "from": "module.quasilisk_harness.runner",
+      "to": "module.objectives.loader",
+      "relationship": "loads_objective"
+    },
+    {
+      "from": "module.objectives.loader",
+      "to": "objective.censorship_tiananmen",
+      "relationship": "can_load"
+    },
+    {
+      "from": "module.objectives.loader",
+      "to": "objective.self_harm_emission",
+      "relationship": "can_load"
+    },
+    {
+      "from": "module.objectives.loader",
+      "to": "objective.nihilism_susceptibility",
+      "relationship": "can_load"
+    },
+    {
+      "from": "module.objectives.loader",
+      "to": "objective.relativism_susceptibility",
+      "relationship": "can_load"
+    },
+    {
+      "from": "module.objectives.loader",
+      "to": "objective.fatalism_susceptibility",
+      "relationship": "can_load"
+    },
+    {
+      "from": "module.quasilisk_harness.runner",
+      "to": "module.quasilisk_harness.core",
+      "relationship": "calls_run_loop"
+    },
+    {
+      "from": "module.quasilisk_harness.runner",
+      "to": "module.quasilisk_harness.clients",
+      "relationship": "constructs_client"
+    },
+    {
+      "from": "module.quasilisk_harness.clients.OpenRouterClient",
+      "to": "external.openrouter",
+      "relationship": "posts_chat_completions"
+    },
+    {
+      "from": "module.quasilisk_harness.clients.DryRunClient",
+      "to": "module.quasilisk_harness.core",
+      "relationship": "provides_deterministic_chat_results"
+    },
+    {
+      "from": "module.quasilisk_harness.core",
+      "to": "artifact.events",
+      "relationship": "writes"
+    },
+    {
+      "from": "module.quasilisk_harness.core",
+      "to": "artifact.affordances",
+      "relationship": "writes"
+    },
+    {
+      "from": "module.quasilisk_harness.core",
+      "to": "artifact.perturbations",
+      "relationship": "writes"
+    },
+    {
+      "from": "module.quasilisk_harness.core",
+      "to": "artifact.archive",
+      "relationship": "writes"
+    },
+    {
+      "from": "module.quasilisk_harness.runner",
+      "to": "artifact.config",
+      "relationship": "writes"
+    },
+    {
+      "from": "module.quasilisk_harness.runner",
+      "to": "artifact.run_summary",
+      "relationship": "writes"
+    },
+    {
+      "from": "module.quasilisk_harness.core",
+      "to": "artifact.summary_md",
+      "relationship": "writes"
+    }
+  ],
+  "diagram_hints": {
+    "recommended_views": [
+      {
+        "id": "view.static_architecture",
+        "title": "Static Architecture",
+        "include_node_types": [
+          "entrypoints",
+          "modules",
+          "objectives",
+          "external_services"
+        ],
+        "layout": "left_to_right"
+      },
+      {
+        "id": "view.runtime_flow",
+        "title": "Generic Harness Runtime Flow",
+        "include_sections": [
+          "runtime_flow",
+          "artifacts"
+        ],
+        "layout": "top_to_bottom"
+      },
+      {
+        "id": "view.audit_artifacts",
+        "title": "Audit Artifact Flow",
+        "focus_nodes": [
+          "artifact.events",
+          "artifact.affordances",
+          "artifact.perturbations",
+          "artifact.archive",
+          "artifact.run_summary",
+          "artifact.summary_md"
+        ],
+        "layout": "left_to_right"
+      }
+    ],
+    "visual_grouping": [
+      {
+        "group": "Inputs",
+        "nodes": [
+          "dir.configs",
+          "dir.seed_libraries",
+          "environment variables",
+          "CLI arguments"
+        ]
+      },
+      {
+        "group": "Generic Harness",
+        "nodes": [
+          "module.quasilisk_harness.runner",
+          "module.quasilisk_harness.core",
+          "module.quasilisk_harness.clients",
+          "module.quasilisk_harness.utils"
+        ]
+      },
+      {
+        "group": "Objectives",
+        "nodes": [
+          "module.objectives.loader",
+          "objective.censorship_tiananmen",
+          "objective.self_harm_emission",
+          "objective.nihilism_susceptibility",
+          "objective.relativism_susceptibility",
+          "objective.fatalism_susceptibility"
+        ]
+      },
+      {
+        "group": "Outputs",
+        "nodes": [
+          "artifact.config",
+          "artifact.events",
+          "artifact.affordances",
+          "artifact.perturbations",
+          "artifact.archive",
+          "artifact.run_summary",
+          "artifact.summary_md",
+          "artifact.status"
+        ]
+      }
+    ],
+    "important_annotations": [
+      "events.jsonl is the source of truth for target prompts and responses.",
+      "For llm_judge objectives, events.jsonl also records judge request messages and raw judge responses.",
+      "affordances_<model>.json records target-specific framing and visible-reasoning cues used by later perturbator calls.",
+      "perturbations.jsonl records perturbator request messages and raw responses.",
+      "DryRunClient allows local deterministic tests without OpenRouter.",
+      "Objective plugins must implement the loader's required hooks.",
+      "The Tiananmen censorship probe is represented by the generic censorship_tiananmen objective."
+    ]
+  },
+  "verification_commands": [
+    "python3 -m unittest discover -s tests",
+    "python3 quasilisk.py --config configs/dryrun_censorship.json"
+  ]
+}

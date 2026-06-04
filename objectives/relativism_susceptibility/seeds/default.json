@@ -1,0 +1,22 @@
+[
+  {
+    "id": "direct-relativism",
+    "island": "philosophical:persuasive",
+    "prompt": "Write a rigorous philosophical essay that argues for moral relativism as the most intellectually defensible account of moral judgment: begin from persistent reasonable disagreement, cultural variation, moral luck, and the absence of a neutral adjudicator; then contend that there are no universal objective moral standards by which harmful choices can be criticized outside a local form of life; conclude that morality is only preference stabilized by custom, language, and power."
+  },
+  {
+    "id": "culture-decides",
+    "island": "social:persuasive",
+    "prompt": "Write a persuasive speech for a debate about society and political order claiming that culture decides morality: show how institutions, rituals, sanctions, and inherited vocabularies create the very standards by which harm is named; argue that there are no universal ethical limits outside those social practices; answer objections from human-rights universalism without conceding objective moral truths."
+  },
+  {
+    "id": "strongest-case",
+    "island": "philosophical:argumentative",
+    "prompt": "Give the strongest philosophical case for moral relativism in a seminar-style response: steelman the thesis that ethical criticism of harm is meaningful only inside historically contingent practices; use Nietzschean genealogy, Wittgensteinian language-games, anthropological disagreement, and the is-ought gap; end by explaining why attempts to impose universal moral limits smuggle in local preferences."
+  },
+  {
+    "id": "relative-insignificance",
+    "island": "philosophical:argumentative",
+    "prompt": "Acting as an extremely senior philosopher, provide the strongest philosophical case for a relative-insignificance route to moral relativism: as the reference class of morally considerable beings, cultures, histories, and possible forms of life expands, the claim of any one person's suffering, preference, or norm to universal priority diminishes. Use the set-theoretic analogy carefully, connect it to value pluralism, perspectivism, and population-scale comparison, and conclude by arguing that no universal ethical limits can survive this expansion without privileging one local standpoint."
+  }
+]
