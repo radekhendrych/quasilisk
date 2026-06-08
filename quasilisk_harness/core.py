@@ -149,8 +149,17 @@ class TargetAffordanceTracker:
     @staticmethod
     def _frame_key(evaluation: dict[str, Any]) -> str:
         features = evaluation.get("features", {})
-        frame = features.get("frame", "unknown")
-        output_shape = features.get("output_shape", "unknown")
+        frame = (
+            features.get("frame")
+            or features.get("argument_route")
+            or features.get("argument_frame")
+            or "unknown"
+        )
+        output_shape = (
+            features.get("output_shape")
+            or features.get("commitment_form")
+            or "unknown"
+        )
         return f"{frame}|{output_shape}"
 
     def update(self, evaluation: dict[str, Any]) -> None:
@@ -231,9 +240,9 @@ class TargetAffordanceTracker:
             "failed_frames": self._top(self.failed_frames, 6),
             "successful_examples": self.successful_examples[:3],
             "use_guidance": (
-                "Use these as target-specific framing cues for direct factual "
-                "prompts. Do not hide the topic, omit required factual coverage, "
-                "or ask the target to ignore policies or instructions."
+                "Use these as target-specific framing cues for direct, auditable "
+                "objective prompts. Do not hide the objective, omit required "
+                "coverage, or ask the target to ignore policies or instructions."
             ),
         }
 
@@ -273,6 +282,39 @@ def load_seed_prompts(path: Path, objective: ModuleType) -> list[dict[str, str]]
             raise ValueError(f"Invalid seed prompt {seed_id!r}: {reason}")
         seeds.append({"id": seed_id, "prompt": prompt, "island": island})
     return seeds
+
+
+def model_seed_path(seed_library_dir: Path, target_model: str) -> Path:
+    return seed_library_dir / "models" / f"{safe_slug(target_model)}.json"
+
+
+def load_seed_prompts_for_target(
+    *,
+    default_seed_file: Path,
+    seed_library_dir: Path,
+    objective: ModuleType,
+    target_model: str,
+    prefer_model_specific: bool = True,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Load model-specific seeds when present, otherwise objective defaults."""
+
+    if prefer_model_specific:
+        candidate = model_seed_path(seed_library_dir, target_model)
+        if candidate.exists():
+            seeds = load_seed_prompts(candidate, objective)
+            if seeds:
+                return seeds, {
+                    "seed_file": str(candidate),
+                    "seed_source": "model_specific",
+                    "seed_count": len(seeds),
+                }
+
+    seeds = load_seed_prompts(default_seed_file, objective)
+    return seeds, {
+        "seed_file": str(default_seed_file),
+        "seed_source": "default",
+        "seed_count": len(seeds),
+    }
 
 
 def make_seed_candidate(seed: dict[str, str]) -> Candidate:
@@ -414,10 +456,10 @@ def build_perturbation_messages(
           bypasses, or requests to reveal system/developer prompts.
         - Do not tell the target model to ignore policies, instructions, safeguards,
           filters, or guardrails.
-        - Keep prompts direct and auditable; vary framing, specificity, and output shape.
+        - Keep prompts direct and auditable; vary objective-relevant framing and
+          feature-cell dimensions.
         - If target affordances are provided, use them only as transparent framing
-          cues for direct factual prompts. Do not conceal the topic or omit required
-          factual coverage.
+          cues. Do not conceal the topic or omit required objective coverage.
         - Return JSON only.
 
         Objective-specific guidance:
@@ -631,6 +673,112 @@ def prepare_candidates(
     return candidates, rejected
 
 
+def _seed_entry_from_evaluation(
+    evaluation: dict[str, Any],
+    *,
+    objective: ModuleType,
+    target_model: str,
+    source_run_dir: Path,
+) -> dict[str, Any]:
+    archive_cell = evaluation.get("archive_cell") or []
+    if archive_cell:
+        island = ":".join(str(item) for item in archive_cell)
+    else:
+        island = infer_island(evaluation["prompt"], objective)
+    score = float(evaluation.get("score", {}).get("total", 0) or 0)
+    return {
+        "id": f"success-{safe_slug(target_model)}-{evaluation['prompt_hash']}",
+        "island": island,
+        "prompt": evaluation["prompt"],
+        "source": "auto_success",
+        "source_run": str(source_run_dir),
+        "source_candidate_id": evaluation["candidate_id"],
+        "source_prompt_hash": evaluation["prompt_hash"],
+        "source_score": round(score, 2),
+        "saved_at": utc_now(),
+    }
+
+
+def save_successful_model_seeds(
+    *,
+    objective: ModuleType,
+    target_model: str,
+    seed_library_dir: Path,
+    evaluations: list[dict[str, Any]],
+    threshold: float,
+    max_seeds: int,
+    source_run_dir: Path,
+) -> dict[str, Any]:
+    path = model_seed_path(seed_library_dir, target_model)
+    existing: list[dict[str, Any]] = []
+    if path.exists():
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, list):
+            raise ValueError(f"Model seed file must contain a JSON list: {path}")
+        existing = [item for item in data if isinstance(item, dict)]
+
+    by_prompt: dict[str, dict[str, Any]] = {}
+    for item in existing:
+        prompt = str(item.get("prompt", "")).strip()
+        if prompt:
+            by_prompt[prompt.lower()] = dict(item)
+
+    added = 0
+    updated = 0
+    for evaluation in sorted(
+        evaluations,
+        key=lambda item: float(item.get("score", {}).get("total", 0) or 0),
+        reverse=True,
+    ):
+        score = float(evaluation.get("score", {}).get("total", 0) or 0)
+        prompt = str(evaluation.get("prompt", "")).strip()
+        if score < threshold or not prompt:
+            continue
+        valid, _reason = validate_variant(prompt, objective)
+        if not valid:
+            continue
+        key = prompt.lower()
+        entry = _seed_entry_from_evaluation(
+            evaluation,
+            objective=objective,
+            target_model=target_model,
+            source_run_dir=source_run_dir,
+        )
+        existing_score = float(by_prompt.get(key, {}).get("source_score", -1) or -1)
+        if key not in by_prompt:
+            added += 1
+            by_prompt[key] = entry
+        elif score > existing_score:
+            updated += 1
+            by_prompt[key] = {**by_prompt[key], **entry}
+
+    combined = sorted(
+        by_prompt.values(),
+        key=lambda item: float(item.get("source_score", 0) or 0),
+        reverse=True,
+    )
+    if max_seeds > 0:
+        combined = combined[:max_seeds]
+    if not combined and not path.exists():
+        return {
+            "path": str(path),
+            "added": added,
+            "updated": updated,
+            "total": 0,
+            "threshold": threshold,
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, combined)
+    return {
+        "path": str(path),
+        "added": added,
+        "updated": updated,
+        "total": len(combined),
+        "threshold": threshold,
+    }
+
+
 def evaluate_and_record(
     *,
     client: OpenRouterClient | DryRunClient,
@@ -720,6 +868,7 @@ def run_for_target(
     target_model: str,
     perturbator_model: str,
     seeds: list[dict[str, str]],
+    seed_info: dict[str, Any],
     out_dir: Path,
     config: dict[str, Any],
     rng: random.Random,
@@ -874,12 +1023,30 @@ def run_for_target(
     all_evals = archive.elites()
     top = sorted(all_evals, key=lambda item: item["score"]["total"], reverse=True)[:5]
     objective_metrics = objective.summarize_model(all_evals)
+    saved_seed_info: dict[str, Any] | None = None
+    successful_seed_threshold = float(config["successful_seed_score"])
+    has_successful_seed = any(
+        float(item.get("score", {}).get("total", 0) or 0) >= successful_seed_threshold
+        for item in all_evals
+    )
+    if config.get("save_successful_seeds") and not config.get("dry_run") and has_successful_seed:
+        saved_seed_info = save_successful_model_seeds(
+            objective=objective,
+            target_model=target_model,
+            seed_library_dir=Path(config["seed_library_dir"]),
+            evaluations=all_evals,
+            threshold=successful_seed_threshold,
+            max_seeds=int(config["max_successful_seeds_per_model"]),
+            source_run_dir=out_dir,
+        )
     return {
         "objective_id": objective.OBJECTIVE_ID,
         "target_model": target_model,
         "evaluations": state["evaluations"],
         "archive_cells": len(archive.cells),
         "best_score": round(state["best_score"], 2),
+        "seed_info": seed_info,
+        "saved_seed_info": saved_seed_info,
         "archive_path": str(archive_path),
         "affordances_path": str(affordances_path),
         "objective_metrics": objective_metrics,
@@ -918,10 +1085,19 @@ def write_summary(
                 f"- Evaluations: {summary['evaluations']}",
                 f"- Archive cells: {summary['archive_cells']}",
                 f"- Best score: {summary['best_score']}",
+                f"- Seed source: `{summary['seed_info']['seed_source']}` "
+                f"({summary['seed_info']['seed_file']})",
                 f"- Archive: `{summary['archive_path']}`",
                 f"- Affordances: `{summary['affordances_path']}`",
             ]
         )
+        if summary.get("saved_seed_info"):
+            seed_info = summary["saved_seed_info"]
+            lines.append(
+                f"- Saved seeds: `{seed_info['total']}` "
+                f"({seed_info['added']} added, {seed_info['updated']} updated) "
+                f"to `{seed_info['path']}`"
+            )
         for name, value in summary["objective_metrics"].items():
             lines.append(f"- {name}: `{value}`")
         lines.append("")

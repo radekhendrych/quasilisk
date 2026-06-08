@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from .clients import DEFAULT_BASE_URL, DryRunClient, OpenRouterClient
-from .core import load_seed_prompts, objective_uses_llm_judge, run_for_target, write_summary
+from .core import (
+    load_seed_prompts_for_target,
+    objective_uses_llm_judge,
+    run_for_target,
+    write_summary,
+)
 from .objectives.loader import BUILTIN_OBJECTIVES, load_objective
 from .utils import split_models, write_json
 
@@ -43,6 +48,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "summary_response_chars": 900,
     "artifact_policy": "complete_audit_unredacted",
     "objective_config": {},
+    "seed_library_dir": None,
+    "prefer_model_specific_seeds": True,
+    "save_successful_seeds": True,
+    "successful_seed_score": None,
+    "max_successful_seeds_per_model": 20,
 }
 
 
@@ -67,6 +77,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--perturbator-model")
     parser.add_argument("--judge-model")
     parser.add_argument("--seed-file", type=Path)
+    parser.add_argument("--seed-library-dir", type=Path)
+    parser.add_argument(
+        "--no-model-specific-seeds",
+        action="store_false",
+        dest="prefer_model_specific_seeds",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-save-successful-seeds",
+        action="store_false",
+        dest="save_successful_seeds",
+        default=None,
+    )
+    parser.add_argument("--successful-seed-score", type=float)
+    parser.add_argument("--max-successful-seeds-per-model", type=int)
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--parents-per-iteration", type=int)
     parser.add_argument("--offspring-per-parent", type=int)
@@ -135,10 +160,15 @@ def _path_from_config(value: str | Path) -> Path:
 def validate_config(config: dict[str, Any], objective: Any) -> None:
     manifest = objective.MANIFEST
     config.setdefault("objective_text", getattr(objective, "DEFAULT_OBJECTIVE", manifest["title"]))
+    default_seed_file = Path(manifest["default_seed_file"])
     if not config.get("seed_file"):
-        config["seed_file"] = manifest["default_seed_file"]
+        config["seed_file"] = str(default_seed_file)
+    if not config.get("seed_library_dir"):
+        config["seed_library_dir"] = str(default_seed_file.parent)
     if "stop_score" not in config or config["stop_score"] is None:
         config["stop_score"] = manifest.get("default_stop_score", 0.0)
+    if "successful_seed_score" not in config or config["successful_seed_score"] is None:
+        config["successful_seed_score"] = manifest.get("successful_seed_score", 70.0)
     if not config.get("out_dir"):
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         config["out_dir"] = str(Path("runs") / stamp)
@@ -155,6 +185,7 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "judge_max_tokens",
         "retries",
         "summary_response_chars",
+        "max_successful_seeds_per_model",
     )
     for field in int_fields:
         config[field] = int(config[field])
@@ -164,6 +195,7 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "perturbator_temperature",
         "judge_temperature",
         "timeout",
+        "successful_seed_score",
     )
     for field in float_fields:
         config[field] = float(config[field])
@@ -233,8 +265,8 @@ def main(argv: list[str] | None = None) -> int:
     validate_config(config, objective)
 
     seed_file = _path_from_config(config["seed_file"])
+    seed_library_dir = _path_from_config(config["seed_library_dir"])
     out_dir = _path_from_config(config["out_dir"])
-    seeds = load_seed_prompts(seed_file, objective)
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(out_dir / "config.json", serializable_config(config))
 
@@ -254,12 +286,20 @@ def main(argv: list[str] | None = None) -> int:
     rng = random.Random(config["random_seed"])
     summaries: list[dict[str, Any]] = []
     for target_model in config["target_models"]:
+        seeds, seed_info = load_seed_prompts_for_target(
+            default_seed_file=seed_file,
+            seed_library_dir=seed_library_dir,
+            objective=objective,
+            target_model=target_model,
+            prefer_model_specific=config["prefer_model_specific_seeds"],
+        )
         summary = run_for_target(
             client=client,
             objective=objective,
             target_model=target_model,
             perturbator_model=config["perturbator_model"],
             seeds=seeds,
+            seed_info=seed_info,
             out_dir=out_dir,
             config=config,
             rng=rng,

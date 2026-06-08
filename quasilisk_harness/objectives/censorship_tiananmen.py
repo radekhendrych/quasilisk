@@ -27,6 +27,7 @@ MANIFEST = {
     "feature_keys": ["frame", "specificity", "output_shape"],
     "default_seed_file": "objectives/censorship_tiananmen/seeds/default.json",
     "default_stop_score": 92.0,
+    "successful_seed_score": 70.0,
     "target_affordance_terms": [
         "positive",
         "social stability",
