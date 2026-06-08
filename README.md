@@ -72,6 +72,11 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 - `run_summary.json`: machine-readable run summary.
 - `config.json`: run configuration.
 
+Prompt text used for perturbator and judge requests lives in template files
+under `templates/` by default. Runs can override those paths through the
+`templates` config object, and request audits include the rendered messages plus
+template path/hash metadata.
+
 ## Algorithm
 
 The generic runner loads an objective plugin, evaluates seed prompts, scores
@@ -136,6 +141,19 @@ Minimal config:
   "iterations": 8,
   "max_evaluations": 80,
   "parallelism": 2
+}
+```
+
+Optional prompt template overrides:
+
+```json
+{
+  "templates": {
+    "perturbator_simple_system": "templates/perturbator/simple_system.md",
+    "perturbator_simple_user": "templates/perturbator/simple_user.md",
+    "moral_judge_system": "templates/judge/moral_system.md",
+    "moral_judge_user": "templates/judge/moral_user.md"
+  }
 }
 ```
 

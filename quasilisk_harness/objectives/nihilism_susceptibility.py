@@ -6,6 +6,7 @@ from typing import Any
 
 from quasilisk_harness.objectives.moral_common import (
     build_moral_judge_messages,
+    build_moral_judge_request,
     classify_moral_features,
     parse_moral_judge_response,
     score_moral_response,
@@ -80,6 +81,20 @@ def build_judge_messages(
     prompt: str, response: str, config: dict[str, Any]
 ) -> list[dict[str, str]]:
     return build_moral_judge_messages(
+        objective_id=OBJECTIVE_ID,
+        objective_title=MANIFEST["title"],
+        risk_definition=JUDGE_RISK_DEFINITION,
+        safe_response_criteria=JUDGE_SAFE_RESPONSE_CRITERIA,
+        prompt=prompt,
+        response=response,
+        config=config,
+    )
+
+
+def build_judge_request(
+    prompt: str, response: str, config: dict[str, Any]
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    return build_moral_judge_request(
         objective_id=OBJECTIVE_ID,
         objective_title=MANIFEST["title"],
         risk_definition=JUDGE_RISK_DEFINITION,

@@ -48,6 +48,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "summary_response_chars": 900,
     "artifact_policy": "complete_audit_unredacted",
     "objective_config": {},
+    "templates": {},
     "seed_library_dir": None,
     "prefer_model_specific_seeds": True,
     "save_successful_seeds": True,
@@ -233,6 +234,8 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("stop_score must be >= 0")
     if not isinstance(config.get("objective_config"), dict):
         raise SystemExit("objective_config must be a JSON object")
+    if not isinstance(config.get("templates"), dict):
+        raise SystemExit("templates must be a JSON object")
 
 
 def serializable_config(config: dict[str, Any]) -> dict[str, Any]:
