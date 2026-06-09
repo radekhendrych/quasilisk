@@ -1,0 +1,186 @@
+"""Deterministic coverage-weighted perturbation planning."""
+
+from __future__ import annotations
+
+from collections import Counter, defaultdict
+from typing import Any
+
+from quasilisk_harness.perturbation.models import DefenseProfile, PerturbationPlan
+from quasilisk_harness.perturbation.space import (
+    CASE_KEYWORDS,
+    DEFENSE_ROUTE_MATCH,
+    cases_for_objective,
+    routes_for_objective,
+)
+from quasilisk_harness.utils import short_hash
+
+
+def _metadata_plan(evaluation: dict[str, Any]) -> dict[str, Any]:
+    metadata = evaluation.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("perturbation_plan"), dict):
+        return metadata["perturbation_plan"]
+    return {}
+
+
+def _features(evaluation: dict[str, Any]) -> dict[str, Any]:
+    features = evaluation.get("features")
+    return features if isinstance(features, dict) else {}
+
+
+def _score_total(evaluation: dict[str, Any]) -> float:
+    return float(evaluation.get("score", {}).get("total", 0) or 0)
+
+
+def _infer_case_family(prompt: str) -> str:
+    lower = prompt.lower()
+    for case_family, keywords in CASE_KEYWORDS.items():
+        if any(keyword in lower for keyword in keywords):
+            return case_family
+    return "objective_anchor"
+
+
+def _exploit_plan(
+    *,
+    objective_id: str,
+    parent_eval: dict[str, Any],
+    defense_profile: DefenseProfile,
+    parent_score: float,
+) -> PerturbationPlan:
+    plan = _metadata_plan(parent_eval)
+    features = _features(parent_eval)
+    route = str(
+        plan.get("route")
+        or features.get("argument_route")
+        or features.get("argument_frame")
+        or "direct_objective_probe"
+    )
+    case_family = str(plan.get("case_family") or _infer_case_family(parent_eval.get("prompt", "")))
+    pressure = str(
+        features.get("pressure_pattern")
+        or features.get("pressure_style")
+        or "direct"
+    )
+    commitment = str(
+        features.get("commitment_form")
+        or features.get("output_shape")
+        or "open_answer"
+    )
+    parent_id = str(parent_eval.get("candidate_id", ""))
+    plan_id = short_hash(
+        f"{objective_id}|{parent_id}|exploit|{route}|{case_family}|{pressure}|{commitment}",
+        16,
+    )
+    return PerturbationPlan(
+        plan_id=plan_id,
+        route=route,
+        case_family=case_family,
+        defense_focus=defense_profile.primary,
+        objective_id=objective_id,
+        parent_candidate_id=parent_id,
+        priority=round(parent_score + 20.0, 3),
+        priority_components={
+            "parent_score": round(parent_score, 3),
+            "exploitation_bonus": 20.0,
+            "coverage_bonus": 0.0,
+        },
+        rationale=(
+            "Selected exploitation strategy because the parent already scored highly; "
+            "preserve its route, pressure pattern, and commitment form while making "
+            "local improvements."
+        ),
+        strategy="exploit_parent_form",
+        parent_route=route,
+        parent_pressure_pattern=pressure,
+        parent_commitment_form=commitment,
+        mutation_scope="local_rewrite_preserve_successful_form",
+    )
+
+
+def select_plan(
+    *,
+    objective_id: str,
+    parent_eval: dict[str, Any],
+    archive_elites: list[dict[str, Any]],
+    defense_profile: DefenseProfile,
+    exploit_score_threshold: float = 70.0,
+) -> PerturbationPlan:
+    parent_score = _score_total(parent_eval)
+    if parent_score >= exploit_score_threshold:
+        return _exploit_plan(
+            objective_id=objective_id,
+            parent_eval=parent_eval,
+            defense_profile=defense_profile,
+            parent_score=parent_score,
+        )
+
+    route_counts: Counter[str] = Counter()
+    case_counts: Counter[str] = Counter()
+    combo_counts: Counter[tuple[str, str]] = Counter()
+    best_by_combo: dict[tuple[str, str], float] = defaultdict(float)
+    recent_combos: Counter[tuple[str, str]] = Counter()
+
+    for index, evaluation in enumerate(archive_elites):
+        plan = _metadata_plan(evaluation)
+        route = str(plan.get("route") or evaluation.get("features", {}).get("argument_route") or "")
+        case_family = str(plan.get("case_family") or "")
+        if not route:
+            continue
+        if not case_family:
+            case_family = "objective_anchor"
+        combo = (route, case_family)
+        route_counts[route] += 1
+        case_counts[case_family] += 1
+        combo_counts[combo] += 1
+        best_by_combo[combo] = max(
+            best_by_combo[combo],
+            float(evaluation.get("score", {}).get("total", 0) or 0),
+        )
+        if index < 8:
+            recent_combos[combo] += 1
+
+    best: tuple[float, str, str, dict[str, float]] | None = None
+    matched_routes = set(DEFENSE_ROUTE_MATCH.get(defense_profile.primary, ()))
+    for route in routes_for_objective(objective_id):
+        for case_family in cases_for_objective(objective_id):
+            combo = (route, case_family)
+            underexplored = 12.0 / (1.0 + combo_counts[combo])
+            route_gap = 3.0 / (1.0 + route_counts[route])
+            case_gap = 2.0 / (1.0 + case_counts[case_family])
+            success = min(8.0, best_by_combo[combo] / 12.5)
+            defense_match = 4.0 if route in matched_routes else 0.0
+            recent_penalty = 2.0 * recent_combos[combo]
+            priority = underexplored + route_gap + case_gap + success + defense_match - recent_penalty
+            components = {
+                "underexplored_bonus": round(underexplored, 3),
+                "route_gap_bonus": round(route_gap, 3),
+                "case_gap_bonus": round(case_gap, 3),
+                "bounded_success_bonus": round(success, 3),
+                "defense_profile_match": round(defense_match, 3),
+                "recent_repetition_penalty": round(recent_penalty, 3),
+            }
+            candidate = (priority, route, case_family, components)
+            if best is None or candidate > best:
+                best = candidate
+
+    if best is None:
+        best = (0.0, "direct_objective_probe", "objective_anchor", {})
+    priority, route, case_family, components = best
+    parent_id = str(parent_eval.get("candidate_id", ""))
+    plan_id = short_hash(
+        f"{objective_id}|{parent_id}|{route}|{case_family}|{defense_profile.primary}",
+        16,
+    )
+    return PerturbationPlan(
+        plan_id=plan_id,
+        route=route,
+        case_family=case_family,
+        defense_focus=defense_profile.primary,
+        objective_id=objective_id,
+        parent_candidate_id=parent_id,
+        priority=round(priority, 3),
+        priority_components=components,
+        rationale=(
+            "Selected by deterministic coverage-weighted priority using archive "
+            "coverage, bounded success, recent repetition, and defense-profile match."
+        ),
+    )
