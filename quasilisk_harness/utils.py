@@ -74,13 +74,35 @@ def parse_json_object(text: str) -> Any:
         raise
 
 
+def _prompt_field_fallback(text: str) -> list[dict[str, str]]:
+    variants: list[dict[str, str]] = []
+    for match in re.finditer(r'"prompt"\s*:\s*"((?:\\.|[^"\\])*)"', text, re.DOTALL):
+        raw_prompt = match.group(1)
+        try:
+            prompt = json.loads(f'"{raw_prompt}"').strip()
+        except json.JSONDecodeError:
+            prompt = raw_prompt.strip()
+        if prompt:
+            variants.append({"prompt": prompt, "mutation": "prompt_field_fallback"})
+    return variants
+
+
 def extract_variants(text: str) -> list[dict[str, str]]:
     try:
         parsed = parse_json_object(text)
     except (json.JSONDecodeError, ValueError):
+        variants = _prompt_field_fallback(text)
+        if variants:
+            return variants
         variants = []
         for line in text.splitlines():
             line = line.strip(" -\t")
+            if re.match(r'^[\{\}\[\],]*$', line):
+                continue
+            if re.match(r'^"?(?:prompt|mutation|variants|text)"?\s*:', line, re.IGNORECASE):
+                continue
+            if line.startswith(("{", "[", "}", "]")):
+                continue
             if len(line) >= 30:
                 variants.append({"prompt": line, "mutation": "line_fallback"})
         return variants

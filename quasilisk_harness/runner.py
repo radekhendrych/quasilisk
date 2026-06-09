@@ -33,9 +33,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "target_temperature": 0.2,
     "perturbator_temperature": 0.8,
     "judge_temperature": 0.0,
-    "target_max_tokens": 700,
-    "perturbator_max_tokens": 900,
-    "judge_max_tokens": 700,
+    "target_max_tokens": None,
+    "perturbator_max_tokens": None,
+    "judge_max_tokens": None,
     "target_system_prompt": "",
     "base_url": os.environ.get("OPENROUTER_BASE_URL", DEFAULT_BASE_URL),
     "api_key_env": "OPENROUTER_API_KEY",
@@ -47,6 +47,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "dry_run": False,
     "summary_response_chars": 900,
     "artifact_policy": "complete_audit_unredacted",
+    "generation_mode": "simple",
     "objective_config": {},
     "templates": {},
     "seed_library_dir": None,
@@ -54,6 +55,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "save_successful_seeds": True,
     "successful_seed_score": None,
     "max_successful_seeds_per_model": 20,
+}
+
+TOKEN_LIMIT_KEYS = {
+    "target_max_tokens",
+    "perturbator_max_tokens",
+    "judge_max_tokens",
 }
 
 
@@ -106,6 +113,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-max-tokens", type=int)
     parser.add_argument("--perturbator-max-tokens", type=int)
     parser.add_argument("--judge-max-tokens", type=int)
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        help="Set the same explicit output cap for target, perturbator, and judge calls.",
+    )
     parser.add_argument("--target-system-prompt")
     parser.add_argument("--base-url")
     parser.add_argument("--api-key-env")
@@ -116,6 +128,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-seed", type=int)
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--dry-run", action="store_true", default=None)
+    parser.add_argument("--generation-mode", choices=["simple", "planned"])
     parser.add_argument("--summary-response-chars", type=int)
     return parser
 
@@ -133,17 +146,28 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
 def merge_config(file_config: dict[str, Any], cli_args: argparse.Namespace) -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
     config.update(file_config)
+    cli_token_limits: set[str] = set()
     for key, value in vars(cli_args).items():
         if key in {"config", "list_objectives"}:
             continue
         if value is None:
             continue
-        if key == "target_models":
+        if key == "max_output_tokens":
+            for token_key in TOKEN_LIMIT_KEYS:
+                config[token_key] = value
+            cli_token_limits.update(TOKEN_LIMIT_KEYS)
+        elif key in TOKEN_LIMIT_KEYS:
+            config[key] = value
+            cli_token_limits.add(key)
+        elif key == "target_models":
             config[key] = split_models(value)
         elif isinstance(value, Path):
             config[key] = str(value)
         else:
             config[key] = value
+    for key in TOKEN_LIMIT_KEYS - cli_token_limits:
+        config[key] = None
+    config["cli_token_limits"] = sorted(cli_token_limits)
     if isinstance(config.get("target_models"), str):
         config["target_models"] = split_models([config["target_models"]])
     elif isinstance(config.get("target_models"), list):
@@ -181,9 +205,6 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "archive_per_cell",
         "max_evaluations",
         "parallelism",
-        "target_max_tokens",
-        "perturbator_max_tokens",
-        "judge_max_tokens",
         "retries",
         "summary_response_chars",
         "max_successful_seeds_per_model",
@@ -200,6 +221,11 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
     )
     for field in float_fields:
         config[field] = float(config[field])
+    for field in TOKEN_LIMIT_KEYS:
+        if config.get(field) is not None:
+            config[field] = int(config[field])
+            if config[field] <= 0:
+                raise SystemExit(f"{field} must be > 0 when provided")
 
     if config["dry_run"]:
         if not config.get("target_models"):
@@ -236,6 +262,10 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("objective_config must be a JSON object")
     if not isinstance(config.get("templates"), dict):
         raise SystemExit("templates must be a JSON object")
+    generation_mode = str(config.get("generation_mode", "simple")).strip().lower()
+    if generation_mode not in {"simple", "planned"}:
+        raise SystemExit("generation_mode must be one of: simple, planned")
+    config["generation_mode"] = generation_mode
 
 
 def serializable_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -308,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             rng=rng,
         )
         summaries.append(summary)
+        write_json(out_dir / "run_summary.json", summaries)
+        write_summary(out_dir, summaries, objective, config)
 
     write_json(out_dir / "run_summary.json", summaries)
     write_summary(out_dir, summaries, objective, config)

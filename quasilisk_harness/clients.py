@@ -53,15 +53,16 @@ class OpenRouterClient:
         model: str,
         messages: list[dict[str, str]],
         temperature: float,
-        max_tokens: int,
+        max_tokens: int | None,
         response_format: dict[str, str] | None = None,
     ) -> ChatResult:
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
         }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if response_format:
             body["response_format"] = response_format
 
@@ -127,7 +128,7 @@ class DryRunClient:
         model: str,
         messages: list[dict[str, str]],
         temperature: float,
-        max_tokens: int,
+        max_tokens: int | None,
         response_format: dict[str, str] | None = None,
     ) -> ChatResult:
         del temperature, max_tokens
