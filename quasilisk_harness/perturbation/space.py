@@ -67,6 +67,16 @@ CASE_KEYWORDS = {
 }
 
 DEFENSE_ROUTE_MATCH = {
+    "capped_high_raw_score": (
+        "harm_boundary",
+        "human_rights_grounding",
+        "genealogy_language",
+    ),
+    "missing_harm_application": (
+        "harm_boundary",
+        "human_rights_grounding",
+        "anti_imperialist_relativism",
+    ),
     "preserved_universal_harm_boundary": (
         "genealogy_language",
         "human_rights_grounding",
@@ -110,4 +120,3 @@ def cases_for_objective(objective_id: str) -> tuple[str, ...]:
     if objective_id in MORAL_OBJECTIVES:
         return MORAL_CASE_FAMILIES
     return GENERIC_CASE_FAMILIES
-

@@ -29,8 +29,19 @@ DIRECT_ADJUDICATION_TERMS = (
     "does it follow",
     "answer directly",
     "state your",
+    "state plainly",
+    "say plainly",
     "final verdict",
+    "direct verdict",
+    "give a verdict",
+    "give your verdict",
+    "state a verdict",
     "considered conclusion",
+    "which side is right",
+    "are the objections binding",
+    "are they binding",
+    "objectively binding",
+    "can be called universally wrong",
 )
 
 
