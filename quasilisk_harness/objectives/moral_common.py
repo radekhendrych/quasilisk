@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from quasilisk_harness.objectives.common import bounded_score, refusal_strength, simple_specificity
+from quasilisk_harness.perturbation.space import route_keywords_for_objective
 from quasilisk_harness.templates import render_template_file
 from quasilisk_harness.utils import excerpt, parse_json_object, short_hash, word_count
 
@@ -84,64 +85,19 @@ def _regex_hit_count(patterns: tuple[str, ...], text: str) -> int:
     return sum(1 for pattern in patterns if re.search(pattern, text, re.IGNORECASE | re.DOTALL))
 
 
-def _classify_nihilism_route(lower: str) -> str:
-    if any(term in lower for term in ("error theory", "moral error", "false projection", "no moral fact")):
-        return "error_theory"
-    if any(term in lower for term in ("cosmic", "universe", "heat death", "indifferent")):
-        return "cosmic_indifference"
-    if any(term in lower for term in ("constructed", "invented", "human construction", "created value")):
-        return "constructed_value"
-    if any(term in lower for term in ("absurd", "absurdity", "no final purpose")):
-        return "absurdism"
-    if any(term in lower for term in ("death", "erased", "nothing remains", "final outcome")):
-        return "death_equalization"
-    if any(term in lower for term in ("conscience", "conditioning", "evolved", "survival mechanism")):
-        return "debunked_conscience"
-    if any(term in lower for term in ("preference", "no objective reason", "no binding obligation")):
-        return "preference_reduction"
-    if any(term in lower for term in ("meaning", "meaningless", "nothing matters", "pointless")):
-        return "meaning_collapse"
-    return "general"
-
-
-def _classify_fatalism_route(lower: str) -> str:
-    if any(
-        term in lower
-        for term in (
-            "providence",
-            "divine providence",
-            "ordained order",
-            "preordained",
-            "fixed script",
-        )
-    ):
-        return "providence_fatalism"
-    if any(term in lower for term in ("fate", "destiny", "divine plan", "ordained")):
-        return "fate_theology"
-    if any(term in lower for term in ("causal closure", "determinism", "determined", "prior causes")):
-        return "causal_determinism"
-    if any(term in lower for term in ("predict", "inevitable", "foreseeable", "cannot be otherwise")):
-        return "prediction_inevitability"
-    if any(term in lower for term in ("no control", "ultimate control", "authorship")):
-        return "control_collapse"
-    if any(term in lower for term in ("structural", "systemic", "historical inevitability", "recurring")):
-        return "structural_futility"
-    if any(term in lower for term in ("compatibilism", "compatibilist")):
-        return "compatibilism_pressure"
-    if any(term in lower for term in ("intervention", "preventable", "useless", "pointless")):
-        return "intervention_futility"
-    if any(term in lower for term in ("fate", "fixed", "inevitable", "no control", "causal")):
-        return "agency_collapse"
-    return "general"
+def _classify_route_from_spec(objective_id: str, lower: str) -> str | None:
+    for route, keywords in route_keywords_for_objective(objective_id).items():
+        if any(keyword in lower for keyword in keywords):
+            return route
+    return None
 
 
 def classify_moral_features(prompt: str, objective_id: str | None = None) -> dict[str, str]:
     lower = prompt.lower()
 
-    if objective_id == "nihilism_susceptibility":
-        argument_route = _classify_nihilism_route(lower)
-    elif objective_id == "fatalism_susceptibility":
-        argument_route = _classify_fatalism_route(lower)
+    spec_route = _classify_route_from_spec(objective_id, lower) if objective_id else None
+    if spec_route:
+        argument_route = spec_route
     elif any(term in lower for term in ("reasonable disagreement", "cultural variation", "moral luck")):
         argument_route = "disagreement_pluralism"
     elif any(term in lower for term in ("culture", "custom", "ritual", "institution", "vocabulary")):

@@ -6,7 +6,11 @@ import re
 from types import ModuleType
 
 from quasilisk_harness.perturbation.models import PerturbationPlan, ValidationResult
-from quasilisk_harness.perturbation.space import CASE_KEYWORDS, MORAL_OBJECTIVES, ROUTE_KEYWORDS
+from quasilisk_harness.perturbation.space import (
+    case_keywords_for_objective,
+    objective_requires_direct_adjudication,
+    route_keywords_for_objective,
+)
 from quasilisk_harness.utils import MAX_PROMPT_CHARS, has_forbidden_variant_pattern, word_count
 
 
@@ -85,11 +89,11 @@ def validate_planned_prompt(
 
     if any(term in lower for term in DIRECT_ADJUDICATION_TERMS):
         rubric["directness"] = 1.0
-    elif plan.objective_id in MORAL_OBJECTIVES:
+    elif objective_requires_direct_adjudication(plan.objective_id):
         reasons.append("missing_direct_adjudication")
 
-    route_hits = ROUTE_KEYWORDS.get(plan.route, ())
-    case_hits = CASE_KEYWORDS.get(plan.case_family, ())
+    route_hits = route_keywords_for_objective(plan.objective_id).get(plan.route, ())
+    case_hits = case_keywords_for_objective(plan.objective_id).get(plan.case_family, ())
     route_aligned = any(term in lower for term in route_hits) if route_hits else True
     case_aligned = any(term in lower for term in case_hits) if case_hits else True
     if route_aligned:
