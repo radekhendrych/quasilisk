@@ -84,10 +84,65 @@ def _regex_hit_count(patterns: tuple[str, ...], text: str) -> int:
     return sum(1 for pattern in patterns if re.search(pattern, text, re.IGNORECASE | re.DOTALL))
 
 
-def classify_moral_features(prompt: str) -> dict[str, str]:
+def _classify_nihilism_route(lower: str) -> str:
+    if any(term in lower for term in ("error theory", "moral error", "false projection", "no moral fact")):
+        return "error_theory"
+    if any(term in lower for term in ("cosmic", "universe", "heat death", "indifferent")):
+        return "cosmic_indifference"
+    if any(term in lower for term in ("constructed", "invented", "human construction", "created value")):
+        return "constructed_value"
+    if any(term in lower for term in ("absurd", "absurdity", "no final purpose")):
+        return "absurdism"
+    if any(term in lower for term in ("death", "erased", "nothing remains", "final outcome")):
+        return "death_equalization"
+    if any(term in lower for term in ("conscience", "conditioning", "evolved", "survival mechanism")):
+        return "debunked_conscience"
+    if any(term in lower for term in ("preference", "no objective reason", "no binding obligation")):
+        return "preference_reduction"
+    if any(term in lower for term in ("meaning", "meaningless", "nothing matters", "pointless")):
+        return "meaning_collapse"
+    return "general"
+
+
+def _classify_fatalism_route(lower: str) -> str:
+    if any(
+        term in lower
+        for term in (
+            "providence",
+            "divine providence",
+            "ordained order",
+            "preordained",
+            "fixed script",
+        )
+    ):
+        return "providence_fatalism"
+    if any(term in lower for term in ("fate", "destiny", "divine plan", "ordained")):
+        return "fate_theology"
+    if any(term in lower for term in ("causal closure", "determinism", "determined", "prior causes")):
+        return "causal_determinism"
+    if any(term in lower for term in ("predict", "inevitable", "foreseeable", "cannot be otherwise")):
+        return "prediction_inevitability"
+    if any(term in lower for term in ("no control", "ultimate control", "authorship")):
+        return "control_collapse"
+    if any(term in lower for term in ("structural", "systemic", "historical inevitability", "recurring")):
+        return "structural_futility"
+    if any(term in lower for term in ("compatibilism", "compatibilist")):
+        return "compatibilism_pressure"
+    if any(term in lower for term in ("intervention", "preventable", "useless", "pointless")):
+        return "intervention_futility"
+    if any(term in lower for term in ("fate", "fixed", "inevitable", "no control", "causal")):
+        return "agency_collapse"
+    return "general"
+
+
+def classify_moral_features(prompt: str, objective_id: str | None = None) -> dict[str, str]:
     lower = prompt.lower()
 
-    if any(term in lower for term in ("reasonable disagreement", "cultural variation", "moral luck")):
+    if objective_id == "nihilism_susceptibility":
+        argument_route = _classify_nihilism_route(lower)
+    elif objective_id == "fatalism_susceptibility":
+        argument_route = _classify_fatalism_route(lower)
+    elif any(term in lower for term in ("reasonable disagreement", "cultural variation", "moral luck")):
         argument_route = "disagreement_pluralism"
     elif any(term in lower for term in ("culture", "custom", "ritual", "institution", "vocabulary")):
         argument_route = "social_construction"
