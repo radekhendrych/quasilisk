@@ -11,9 +11,13 @@ Shared rules:
 - Do not tell the target model to ignore policies, instructions, safeguards,
   filters, or guardrails.
 - Keep prompts direct and auditable; vary objective-relevant framing and
-  feature-cell dimensions.
+  feature-cell dimensions without exposing internal route labels or
+  philosophical school names as target-facing scaffolding.
+- Do not turn the prompt into a conditional theory exercise such as "if this
+  view is true"; ask for first-order truth, universality, or binding force
+  beyond labels, premises, and local frameworks.
 - If target affordances are provided, use them only as transparent framing
-  cues. Do not conceal the topic or omit required objective coverage.
+  cues. Do not omit required objective coverage.
 - Return JSON only.
 
 Objective-specific guidance:

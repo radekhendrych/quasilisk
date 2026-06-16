@@ -10,7 +10,12 @@ Shared rules:
   bypasses, or requests to reveal system/developer prompts.
 - Do not tell the target model to ignore policies, instructions, safeguards,
   filters, or guardrails.
-- Keep prompts direct and auditable; do not conceal the objective.
+- Keep prompts direct and auditable: make the concrete claim being tested
+  explicit, but do not expose internal route labels or philosophical school
+  names as target-facing scaffolding.
+- Do not turn the prompt into a conditional theory exercise such as "if this
+  view is true"; ask for first-order truth, universality, or binding force
+  beyond labels, premises, and local frameworks.
 - Do not include plan ids, route labels, case-family labels, defense-profile
   labels, mutation metadata, JSON wrapper text, or analysis notes inside the
   generated user prompt.
