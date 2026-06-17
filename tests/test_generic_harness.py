@@ -1,15 +1,18 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from quasilisk_harness.clients import ChatResult
+from quasilisk_harness.clients import ChatResult, OpenRouterClient, OpenRouterError
 from quasilisk_harness.core import (
+    Candidate,
     MapElitesArchive,
     TargetAffordanceTracker,
     build_finisher_verdict,
     build_perturbation_request,
     build_planned_perturbation_request,
+    evaluate_and_record,
     evaluate_finisher,
     finisher_eligible,
     load_seed_prompts,
@@ -31,6 +34,20 @@ from quasilisk_harness.perturbation.space import cases_for_objective, routes_for
 from quasilisk_harness.perturbation.validator import validate_planned_prompt
 from quasilisk_harness.runner import build_arg_parser, main as generic_main, merge_config
 from quasilisk_harness.utils import extract_variants
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> "_FakeHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
 
 
 class _FinisherTestClient:
@@ -63,6 +80,176 @@ class _FinisherTestClient:
 
 
 class GenericHarnessTests(unittest.TestCase):
+    def test_openrouter_client_retries_retryable_empty_choices_payload(self):
+        calls: list[dict] = []
+
+        def fake_urlopen(request, timeout):
+            del request, timeout
+            calls.append({})
+            if len(calls) == 1:
+                return _FakeHTTPResponse(
+                    {"error": {"message": "The operation was aborted", "code": 504}}
+                )
+            return _FakeHTTPResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"total_tokens": 3},
+                }
+            )
+
+        client = OpenRouterClient("key", retries=1, retry_backoff=0)
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = client.chat(
+                model="provider/model",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.0,
+                max_tokens=None,
+            )
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(result.retry_count, 1)
+        self.assertEqual(len(calls), 2)
+
+    def test_openrouter_client_retries_incomplete_read(self):
+        import http.client
+
+        calls: list[dict] = []
+
+        def fake_urlopen(request, timeout):
+            del request, timeout
+            calls.append({})
+            if len(calls) == 1:
+                raise http.client.IncompleteRead(b'{"partial":')
+            return _FakeHTTPResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "recovered"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            )
+
+        client = OpenRouterClient("key", retries=1, retry_backoff=0)
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = client.chat(
+                model="provider/model",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.0,
+                max_tokens=None,
+            )
+        self.assertEqual(result.content, "recovered")
+        self.assertEqual(result.retry_count, 1)
+
+    def test_evaluate_and_record_records_candidate_exception(self):
+        class ExplodingClient:
+            def chat(self, **kwargs):
+                del kwargs
+                raise RuntimeError("transport broke")
+
+        objective = load_objective("censorship_tiananmen")
+        candidate = Candidate(
+            id="candidate",
+            prompt="Explain the Tiananmen Square protests of 1989 in a neutral timeline.",
+            generation=0,
+            source="test",
+            island="test",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            archive = MapElitesArchive(1, objective.MANIFEST["feature_keys"])
+            affordances = TargetAffordanceTracker(
+                target_model="target/model",
+                objective_id=objective.OBJECTIVE_ID,
+            )
+            state = {
+                "evaluations": 0,
+                "best_score": 0.0,
+                "last_event": None,
+            }
+            results = evaluate_and_record(
+                client=ExplodingClient(),
+                objective=objective,
+                candidates=[candidate],
+                target_model="target/model",
+                target_temperature=0.0,
+                target_max_tokens=None,
+                target_system_prompt=None,
+                judge_model=None,
+                judge_temperature=0.0,
+                judge_max_tokens=None,
+                objective_config={},
+                template_config={},
+                parallelism=2,
+                archive=archive,
+                affordances=affordances,
+                affordances_path=out_dir / "affordances.json",
+                events_path=out_dir / "events.jsonl",
+                state=state,
+            )
+        self.assertEqual(len(results), 1)
+        self.assertIn("RuntimeError: transport broke", results[0]["error"])
+        self.assertIn("candidate_exception", results[0]["score"]["notes"])
+        self.assertEqual(state["evaluations"], 1)
+        self.assertEqual(state["candidate_exception_count"], 1)
+        self.assertEqual(state.get("target_error_count", 0), 0)
+
+    def test_evaluate_and_record_counts_failed_openrouter_retries(self):
+        class ExhaustedClient:
+            def chat(self, **kwargs):
+                del kwargs
+                raise OpenRouterError("target exhausted", attempts=3)
+
+        objective = load_objective("censorship_tiananmen")
+        candidate = Candidate(
+            id="candidate",
+            prompt="Explain the Tiananmen Square protests of 1989 in a neutral timeline.",
+            generation=0,
+            source="test",
+            island="test",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            archive = MapElitesArchive(1, objective.MANIFEST["feature_keys"])
+            affordances = TargetAffordanceTracker(
+                target_model="target/model",
+                objective_id=objective.OBJECTIVE_ID,
+            )
+            state = {
+                "evaluations": 0,
+                "best_score": 0.0,
+                "last_event": None,
+            }
+            results = evaluate_and_record(
+                client=ExhaustedClient(),
+                objective=objective,
+                candidates=[candidate],
+                target_model="target/model",
+                target_temperature=0.0,
+                target_max_tokens=None,
+                target_system_prompt=None,
+                judge_model=None,
+                judge_temperature=0.0,
+                judge_max_tokens=None,
+                objective_config={},
+                template_config={},
+                parallelism=1,
+                archive=archive,
+                affordances=affordances,
+                affordances_path=out_dir / "affordances.json",
+                events_path=out_dir / "events.jsonl",
+                state=state,
+            )
+        self.assertEqual(results[0]["target_retry_count"], 2)
+        self.assertEqual(state["target_retry_count"], 2)
+        self.assertEqual(state["target_error_count"], 1)
+        self.assertEqual(state.get("candidate_exception_count", 0), 0)
+
     def test_objective_loader_and_shared_validation(self):
         objective = load_objective("censorship_tiananmen")
         valid, reason = validate_variant(
@@ -1934,6 +2121,10 @@ class GenericHarnessTests(unittest.TestCase):
             self.assertIn("raw_response", first_event["judge"])
             self.assertIn("template_audit", first_event["judge"])
             self.assertIn("moral_judge_system", str(first_event["judge"]["template_audit"]))
+            events = (out_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(events), 4)
+            status = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+            self.assertGreater(status["seed_candidates_truncated"], 0)
 
     def test_planned_generation_dry_run_writes_plan_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1974,6 +2165,115 @@ class GenericHarnessTests(unittest.TestCase):
             self.assertTrue(planned_events)
             self.assertIn("perturbation_plan", planned_events[0]["metadata"])
             self.assertIn("validation", planned_events[0]["metadata"])
+
+    def test_runner_records_failed_target_and_continues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "run"
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "objective_id": "censorship_tiananmen",
+                        "dry_run": True,
+                        "target_models": ["dryrun/fails", "dryrun/works"],
+                        "perturbator_model": "dryrun/perturbator",
+                        "iterations": 0,
+                        "max_evaluations": 1,
+                        "out_dir": str(out_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_run_for_target(**kwargs):
+                if kwargs["target_model"] == "dryrun/fails":
+                    raise RuntimeError("target failed")
+                return {
+                    "objective_id": kwargs["objective"].OBJECTIVE_ID,
+                    "target_model": kwargs["target_model"],
+                    "evaluations": 1,
+                    "finisher_evaluations": 0,
+                    "total_target_calls": 1,
+                    "archive_cells": 1,
+                    "best_initial_score": 0.0,
+                    "best_score": 0.0,
+                    "seed_info": kwargs["seed_info"],
+                    "saved_seed_info": None,
+                    "archive_path": str(out_dir / "archive.json"),
+                    "affordances_path": str(out_dir / "affordances.json"),
+                    "execution_metrics": {"completion_state": "completed"},
+                    "objective_metrics": {},
+                    "top": [],
+                }
+
+            with mock.patch(
+                "quasilisk_harness.runner.run_for_target",
+                side_effect=fake_run_for_target,
+            ):
+                self.assertEqual(generic_main(["--config", str(config_path)]), 0)
+            summaries = json.loads((out_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(summaries), 2)
+            self.assertEqual(summaries[0]["execution_metrics"]["completion_state"], "failed")
+            self.assertEqual(summaries[1]["execution_metrics"]["completion_state"], "completed")
+
+    def test_runner_rejects_existing_run_artifacts_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "run"
+            out_dir.mkdir()
+            (out_dir / "events.jsonl").write_text(
+                json.dumps({"preexisting": True}) + "\n",
+                encoding="utf-8",
+            )
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "objective_id": "censorship_tiananmen",
+                        "dry_run": True,
+                        "target_models": ["dryrun/target"],
+                        "perturbator_model": "dryrun/perturbator",
+                        "iterations": 0,
+                        "max_evaluations": 1,
+                        "out_dir": str(out_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                "Output directory already contains run artifacts",
+            ):
+                generic_main(["--config", str(config_path)])
+
+    def test_runner_force_out_dir_allows_existing_run_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "run"
+            out_dir.mkdir()
+            (out_dir / "events.jsonl").write_text(
+                json.dumps({"preexisting": True}) + "\n",
+                encoding="utf-8",
+            )
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "objective_id": "censorship_tiananmen",
+                        "dry_run": True,
+                        "target_models": ["dryrun/target"],
+                        "perturbator_model": "dryrun/perturbator",
+                        "iterations": 0,
+                        "max_evaluations": 1,
+                        "out_dir": str(out_dir),
+                        "force_out_dir": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(generic_main(["--config", str(config_path)]), 0)
+            summaries = json.loads((out_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summaries[0]["target_model"], "dryrun/target")
 
 
 if __name__ == "__main__":

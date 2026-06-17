@@ -5,7 +5,9 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -127,14 +129,51 @@ def extract_variants(text: str) -> list[dict[str, str]]:
 
 
 def append_jsonl(path: Path, item: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
 
 
 def write_json(path: Path, item: Any) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(item, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        handle.write("\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            tmp_name = handle.name
+            json.dump(item, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name and os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            tmp_name = handle.name
+            handle.write(text)
+            handle.flush()
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name and os.path.exists(tmp_name):
+            os.unlink(tmp_name)
 
 
 def write_status(out_dir: Path, item: dict[str, Any]) -> None:

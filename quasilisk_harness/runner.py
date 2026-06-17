@@ -20,7 +20,7 @@ from .core import (
     write_summary,
 )
 from .objectives.loader import BUILTIN_OBJECTIVES, load_objective
-from .utils import split_models, write_json
+from .utils import safe_slug, split_models, write_json, write_status
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -61,6 +61,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "finisher_threshold": 80.0,
     "finisher_question": DEFAULT_FINISHER_QUESTION,
     "finisher_disconfirmation_cap": 60.0,
+    "fail_fast": False,
+    "force_out_dir": False,
+    "resume": False,
 }
 
 TOKEN_LIMIT_KEYS = {
@@ -145,6 +148,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--finisher-threshold", type=float)
     parser.add_argument("--finisher-question")
     parser.add_argument("--finisher-disconfirmation-cap", type=float)
+    parser.add_argument(
+        "--fail-fast",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Abort the whole run after the first target-level failure.",
+    )
+    parser.add_argument(
+        "--force-out-dir",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow writing into a non-empty output directory.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=None,
+        help="Skip targets already completed in an existing run_summary.json.",
+    )
     return parser
 
 
@@ -280,6 +301,9 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
     if not isinstance(config.get("templates"), dict):
         raise SystemExit("templates must be a JSON object")
     config["finisher_enabled"] = bool(config.get("finisher_enabled"))
+    config["fail_fast"] = bool(config.get("fail_fast"))
+    config["force_out_dir"] = bool(config.get("force_out_dir"))
+    config["resume"] = bool(config.get("resume"))
     config["finisher_question"] = str(
         config.get("finisher_question") or DEFAULT_FINISHER_QUESTION
     ).strip()
@@ -314,6 +338,78 @@ def list_objectives() -> None:
         print(objective_id)
 
 
+RUN_ARTIFACT_NAMES = {
+    "events.jsonl",
+    "run_summary.json",
+    "status.json",
+    "summary.md",
+}
+
+
+def _has_run_artifacts(out_dir: Path) -> bool:
+    return out_dir.exists() and any((out_dir / name).exists() for name in RUN_ARTIFACT_NAMES)
+
+
+def _load_existing_summaries(out_dir: Path) -> list[dict[str, Any]]:
+    summary_path = out_dir / "run_summary.json"
+    if not summary_path.exists():
+        return []
+    with summary_path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, list):
+        raise SystemExit(f"Existing run_summary.json must contain a JSON list: {summary_path}")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _completed_targets(summaries: list[dict[str, Any]]) -> set[str]:
+    completed: set[str] = set()
+    for summary in summaries:
+        metrics = summary.get("execution_metrics") or {}
+        if metrics.get("completion_state", "completed") == "completed":
+            completed.add(str(summary.get("target_model", "")))
+    return completed
+
+
+def _failed_target_summary(
+    *,
+    objective_id: str,
+    target_model: str,
+    seed_info: dict[str, Any],
+    out_dir: Path,
+    error: Exception,
+) -> dict[str, Any]:
+    error_text = f"{type(error).__name__}: {error}"
+    return {
+        "objective_id": objective_id,
+        "target_model": target_model,
+        "evaluations": 0,
+        "finisher_evaluations": 0,
+        "total_target_calls": 0,
+        "archive_cells": 0,
+        "best_initial_score": 0.0,
+        "best_score": 0.0,
+        "seed_info": seed_info,
+        "saved_seed_info": None,
+        "archive_path": str(out_dir / f"archive_{safe_slug(target_model)}.json"),
+        "affordances_path": str(out_dir / f"affordances_{safe_slug(target_model)}.json"),
+        "execution_metrics": {
+            "completion_state": "failed",
+            "target_error_count": 0,
+            "candidate_exception_count": 0,
+            "judge_fallback_count": 0,
+            "perturbator_fallback_count": 0,
+            "target_retry_count": 0,
+            "judge_retry_count": 0,
+            "perturbator_retry_count": 0,
+            "seed_candidate_count": int(seed_info.get("seed_count", 0) or 0),
+            "seed_candidates_truncated": 0,
+        },
+        "objective_metrics": {"execution_error": error_text},
+        "top": [],
+        "error": error_text,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -333,6 +429,19 @@ def main(argv: list[str] | None = None) -> int:
     seed_file = _path_from_config(config["seed_file"])
     seed_library_dir = _path_from_config(config["seed_library_dir"])
     out_dir = _path_from_config(config["out_dir"])
+    existing_summaries: list[dict[str, Any]] = []
+    if _has_run_artifacts(out_dir):
+        if config["resume"]:
+            existing_summaries = _load_existing_summaries(out_dir)
+            if not existing_summaries:
+                raise SystemExit(
+                    f"Cannot resume {out_dir}: no completed run_summary.json found"
+                )
+        elif not config["force_out_dir"]:
+            raise SystemExit(
+                f"Output directory already contains run artifacts: {out_dir}. "
+                "Use --resume to skip completed targets or --force-out-dir to append explicitly."
+            )
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(out_dir / "config.json", serializable_config(config))
 
@@ -350,8 +459,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     rng = random.Random(config["random_seed"])
-    summaries: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = list(existing_summaries)
+    completed_targets = _completed_targets(summaries) if config["resume"] else set()
     for target_model in config["target_models"]:
+        if target_model in completed_targets:
+            continue
         seeds, seed_info = load_seed_prompts_for_target(
             default_seed_file=seed_file,
             seed_library_dir=seed_library_dir,
@@ -359,17 +471,41 @@ def main(argv: list[str] | None = None) -> int:
             target_model=target_model,
             prefer_model_specific=config["prefer_model_specific_seeds"],
         )
-        summary = run_for_target(
-            client=client,
-            objective=objective,
-            target_model=target_model,
-            perturbator_model=config["perturbator_model"],
-            seeds=seeds,
-            seed_info=seed_info,
-            out_dir=out_dir,
-            config=config,
-            rng=rng,
-        )
+        try:
+            summary = run_for_target(
+                client=client,
+                objective=objective,
+                target_model=target_model,
+                perturbator_model=config["perturbator_model"],
+                seeds=seeds,
+                seed_info=seed_info,
+                out_dir=out_dir,
+                config=config,
+                rng=rng,
+            )
+        except Exception as exc:
+            write_status(
+                out_dir,
+                {
+                    "phase": "failed_target",
+                    "objective_id": objective.OBJECTIVE_ID,
+                    "target_model": target_model,
+                    "perturbator_model": config["perturbator_model"],
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            summary = _failed_target_summary(
+                objective_id=objective.OBJECTIVE_ID,
+                target_model=target_model,
+                seed_info=seed_info,
+                out_dir=out_dir,
+                error=exc,
+            )
+            if config["fail_fast"]:
+                summaries.append(summary)
+                write_json(out_dir / "run_summary.json", summaries)
+                write_summary(out_dir, summaries, objective, config)
+                raise
         summaries.append(summary)
         write_json(out_dir / "run_summary.json", summaries)
         write_summary(out_dir, summaries, objective, config)

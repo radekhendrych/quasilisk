@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import http.client
 import json
 import re
+import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +17,21 @@ from .utils import parse_json_object, short_hash
 
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+RETRYABLE_TRANSPORT_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    UnicodeDecodeError,
+    http.client.HTTPException,
+    socket.timeout,
+    ssl.SSLError,
+    OSError,
+)
+RETRYABLE_CLIENT_ERRORS = (
+    urllib.error.URLError,
+    json.JSONDecodeError,
+    *RETRYABLE_TRANSPORT_ERRORS,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -22,10 +40,42 @@ class ChatResult:
     raw: dict[str, Any]
     usage: dict[str, Any]
     finish_reason: str | None = None
+    retry_count: int = 0
 
 
 class OpenRouterError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int | None = None,
+        retryable: bool = False,
+        attempts: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.attempts = attempts
+
+
+def _payload_error_code(payload: dict[str, Any]) -> int | None:
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    raw_code = error.get("code")
+    try:
+        return int(raw_code)
+    except (TypeError, ValueError):
+        return None
+
+
+def _payload_error_message(payload: dict[str, Any]) -> str:
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if message:
+            return str(message)
+    return str(payload)[:1000]
 
 
 class OpenRouterClient:
@@ -76,7 +126,10 @@ class OpenRouterClient:
             headers["X-OpenRouter-Title"] = self.app_title
 
         last_error: Exception | None = None
+        retry_count = 0
+        attempts_made = 0
         for attempt in range(self.retries + 1):
+            attempts_made = attempt + 1
             request = urllib.request.Request(
                 f"{self.base_url}/chat/completions",
                 data=json.dumps(body).encode("utf-8"),
@@ -88,7 +141,13 @@ class OpenRouterClient:
                     payload = json.loads(response.read().decode("utf-8"))
                     choices = payload.get("choices") or []
                     if not choices:
-                        raise OpenRouterError(f"No choices returned: {payload}")
+                        code = _payload_error_code(payload)
+                        retryable = code in RETRYABLE_STATUS_CODES or code is None
+                        raise OpenRouterError(
+                            f"No choices returned: {_payload_error_message(payload)}",
+                            code=code,
+                            retryable=retryable,
+                        )
                     choice = choices[0]
                     message = choice.get("message") or {}
                     content = message.get("content")
@@ -102,21 +161,41 @@ class OpenRouterClient:
                         raw=payload,
                         usage=payload.get("usage") or {},
                         finish_reason=choice.get("finish_reason"),
+                        retry_count=retry_count,
                     )
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
+                retryable = exc.code in RETRYABLE_STATUS_CODES
                 last_error = OpenRouterError(
-                    f"OpenRouter HTTP {exc.code}: {error_body[:1000]}"
+                    f"OpenRouter HTTP {exc.code}: {error_body[:1000]}",
+                    code=exc.code,
+                    retryable=retryable,
                 )
-                if exc.code not in {408, 409, 425, 429, 500, 502, 503, 504}:
+                if not retryable:
                     break
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except OpenRouterError as exc:
+                last_error = exc
+                if not exc.retryable:
+                    break
+            except RETRYABLE_CLIENT_ERRORS as exc:
                 last_error = exc
 
             if attempt < self.retries:
+                retry_count += 1
                 time.sleep(self.retry_backoff * (2**attempt))
 
-        raise OpenRouterError(str(last_error or "OpenRouter request failed"))
+        if isinstance(last_error, OpenRouterError):
+            raise OpenRouterError(
+                str(last_error),
+                code=last_error.code,
+                retryable=last_error.retryable,
+                attempts=attempts_made,
+            )
+        raise OpenRouterError(
+            str(last_error or "OpenRouter request failed"),
+            retryable=True,
+            attempts=attempts_made,
+        )
 
 
 class DryRunClient:

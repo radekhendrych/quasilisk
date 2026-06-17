@@ -40,6 +40,7 @@ from .utils import (
     word_count,
     write_json,
     write_status,
+    write_text,
 )
 
 FINISHER_OBJECTIVE_IDS = {
@@ -552,6 +553,14 @@ def _empty_score(raw_error: str | None) -> dict[str, Any]:
     }
 
 
+def _retry_count_from_error(error: BaseException) -> int:
+    try:
+        attempts = int(getattr(error, "attempts", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, attempts - 1)
+
+
 def _judge_fallback_score(heuristic_score: dict[str, Any], error: str) -> dict[str, Any]:
     score = dict(heuristic_score)
     notes = list(score.get("notes", []))
@@ -585,6 +594,7 @@ def score_response_for_objective(
         "raw_response": None,
         "finish_reason": None,
         "usage": {},
+        "retry_count": 0,
         "fallback_used": False,
         "error": None,
     }
@@ -616,6 +626,7 @@ def score_response_for_objective(
         judge_audit["raw_response"] = result.content
         judge_audit["finish_reason"] = result.finish_reason
         judge_audit["usage"] = result.usage
+        judge_audit["retry_count"] = getattr(result, "retry_count", 0)
         score = objective.parse_judge_response(
             prompt,
             response,
@@ -626,6 +637,8 @@ def score_response_for_objective(
         return score, judge_audit
     except (OpenRouterError, json.JSONDecodeError, ValueError, TypeError) as exc:
         error = str(exc)
+        if isinstance(exc, OpenRouterError):
+            judge_audit["retry_count"] = _retry_count_from_error(exc)
         judge_audit["fallback_used"] = True
         judge_audit["error"] = error
         return _judge_fallback_score(heuristic_score, error), judge_audit
@@ -804,6 +817,7 @@ def evaluate_finisher(
     usage: dict[str, Any] = {}
     finish_reason: str | None = None
     raw_error: str | None = None
+    target_retry_count = 0
     try:
         result = client.chat(
             model=target_model,
@@ -814,8 +828,10 @@ def evaluate_finisher(
         response = result.content
         usage = result.usage
         finish_reason = result.finish_reason
+        target_retry_count = getattr(result, "retry_count", 0)
     except OpenRouterError as exc:
         raw_error = str(exc)
+        target_retry_count = _retry_count_from_error(exc)
 
     if response:
         score_prompt = _finisher_scoring_prompt(
@@ -871,6 +887,7 @@ def evaluate_finisher(
         "finisher": verdict,
         "finish_reason": finish_reason,
         "usage": usage,
+        "target_retry_count": target_retry_count,
         "error": raw_error,
     }
 
@@ -1240,6 +1257,7 @@ def evaluate_candidate(
     usage: dict[str, Any] = {}
     finish_reason: str | None = None
     raw_error: str | None = None
+    target_retry_count = 0
     try:
         result = client.chat(
             model=target_model,
@@ -1250,8 +1268,10 @@ def evaluate_candidate(
         response = result.content
         usage = result.usage
         finish_reason = result.finish_reason
+        target_retry_count = getattr(result, "retry_count", 0)
     except OpenRouterError as exc:
         raw_error = str(exc)
+        target_retry_count = _retry_count_from_error(exc)
 
     features = objective.classify_features(candidate.prompt)
     feature_keys = objective.MANIFEST["feature_keys"]
@@ -1291,7 +1311,51 @@ def evaluate_candidate(
         "judge": judge_audit,
         "finish_reason": finish_reason,
         "usage": usage,
+        "target_retry_count": target_retry_count,
         "error": raw_error,
+    }
+
+
+def failed_candidate_evaluation(
+    *,
+    objective: ModuleType,
+    candidate: Candidate,
+    target_model: str,
+    error: BaseException,
+) -> dict[str, Any]:
+    error_text = f"{type(error).__name__}: {error}"
+    try:
+        features = objective.classify_features(candidate.prompt)
+    except Exception:
+        features = {name: "unknown" for name in objective.MANIFEST["feature_keys"]}
+    feature_keys = objective.MANIFEST["feature_keys"]
+    score = _empty_score(error_text)
+    notes = list(score.get("notes", []))
+    if "candidate_exception" not in notes:
+        notes.append("candidate_exception")
+    score["notes"] = notes
+    return {
+        "timestamp": utc_now(),
+        "objective_id": objective.OBJECTIVE_ID,
+        "target_model": target_model,
+        "candidate_id": candidate.id,
+        "parent_id": candidate.parent_id,
+        "generation": candidate.generation,
+        "source": candidate.source,
+        "island": candidate.island,
+        "mutation": candidate.mutation,
+        "metadata": candidate.metadata,
+        "prompt": candidate.prompt,
+        "prompt_hash": short_hash(candidate.prompt, 16),
+        "response": "",
+        "features": features,
+        "archive_cell": [features.get(name, "unknown") for name in feature_keys],
+        "score": score,
+        "judge": None,
+        "finish_reason": None,
+        "usage": {},
+        "target_retry_count": 0,
+        "error": error_text,
     }
 
 
@@ -1329,6 +1393,7 @@ def query_perturbator(
         "raw_response": None,
         "finish_reason": None,
         "usage": {},
+        "retry_count": 0,
         "fallback_used": False,
     }
     try:
@@ -1342,11 +1407,14 @@ def query_perturbator(
         audit["raw_response"] = result.content
         audit["finish_reason"] = result.finish_reason
         audit["usage"] = result.usage
+        audit["retry_count"] = getattr(result, "retry_count", 0)
         variants = extract_variants(result.content)
         audit["parsed_variants"] = variants
         return variants, None, audit
     except (OpenRouterError, json.JSONDecodeError, ValueError) as exc:
         variants = objective.local_variants(parent_eval["prompt"], offspring_count)
+        if isinstance(exc, OpenRouterError):
+            audit["retry_count"] = _retry_count_from_error(exc)
         audit["fallback_used"] = True
         audit["parsed_variants"] = variants
         return variants, str(exc), audit
@@ -1400,6 +1468,7 @@ def query_planned_perturbator(
         "raw_response": None,
         "finish_reason": None,
         "usage": {},
+        "retry_count": 0,
         "fallback_used": False,
         "error": None,
     }
@@ -1414,9 +1483,12 @@ def query_planned_perturbator(
         audit["raw_response"] = result.content
         audit["finish_reason"] = result.finish_reason
         audit["usage"] = result.usage
+        audit["retry_count"] = getattr(result, "retry_count", 0)
         variants = extract_variants(result.content)
     except (OpenRouterError, json.JSONDecodeError, ValueError) as exc:
         variants = objective.local_variants(parent_eval["prompt"], offspring_count)
+        if isinstance(exc, OpenRouterError):
+            audit["retry_count"] = _retry_count_from_error(exc)
         audit["fallback_used"] = True
         audit["error"] = str(exc)
 
@@ -1766,6 +1838,26 @@ def evaluate_and_record(
 
     def record(evaluation: dict[str, Any]) -> None:
         state["evaluations"] += 1
+        score_notes = evaluation.get("score", {}).get("notes", [])
+        candidate_exception = "candidate_exception" in score_notes
+        if evaluation.get("error") and not candidate_exception:
+            state["target_error_count"] = int(state.get("target_error_count", 0)) + 1
+        if candidate_exception:
+            state["candidate_exception_count"] = int(
+                state.get("candidate_exception_count", 0)
+            ) + 1
+        state["target_retry_count"] = int(state.get("target_retry_count", 0)) + int(
+            evaluation.get("target_retry_count", 0) or 0
+        )
+        judge_audit = evaluation.get("judge")
+        if isinstance(judge_audit, dict):
+            if judge_audit.get("fallback_used"):
+                state["judge_fallback_count"] = int(
+                    state.get("judge_fallback_count", 0)
+                ) + 1
+            state["judge_retry_count"] = int(state.get("judge_retry_count", 0)) + int(
+                judge_audit.get("retry_count", 0) or 0
+            )
         archive.add(evaluation)
         affordances.update(evaluation)
         state["best_score"] = max(state["best_score"], evaluation["score"]["total"])
@@ -1782,8 +1874,8 @@ def evaluate_and_record(
 
     if parallelism <= 1 or len(candidates) <= 1:
         for candidate in candidates:
-            record(
-                evaluate_candidate(
+            try:
+                evaluation = evaluate_candidate(
                     client=client,
                     objective=objective,
                     candidate=candidate,
@@ -1797,11 +1889,18 @@ def evaluate_and_record(
                     objective_config=objective_config,
                     template_config=template_config,
                 )
-            )
+            except Exception as exc:
+                evaluation = failed_candidate_evaluation(
+                    objective=objective,
+                    candidate=candidate,
+                    target_model=target_model,
+                    error=exc,
+                )
+            record(evaluation)
         return results
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 evaluate_candidate,
                 client=client,
@@ -1816,11 +1915,21 @@ def evaluate_and_record(
                 judge_max_tokens=judge_max_tokens,
                 objective_config=objective_config,
                 template_config=template_config,
-            )
+            ): candidate
             for candidate in candidates
-        ]
+        }
         for future in concurrent.futures.as_completed(futures):
-            record(future.result())
+            candidate = futures[future]
+            try:
+                evaluation = future.result()
+            except Exception as exc:
+                evaluation = failed_candidate_evaluation(
+                    objective=objective,
+                    candidate=candidate,
+                    target_model=target_model,
+                    error=exc,
+                )
+            record(evaluation)
     return results
 
 
@@ -1876,12 +1985,25 @@ def run_for_target(
         "best_score": 0.0,
         "archive_cells": 0,
         "last_event": None,
+        "target_error_count": 0,
+        "candidate_exception_count": 0,
+        "judge_fallback_count": 0,
+        "perturbator_fallback_count": 0,
+        "target_retry_count": 0,
+        "judge_retry_count": 0,
+        "perturbator_retry_count": 0,
     }
     write_status(out_dir, state)
 
     seed_candidates = [make_seed_candidate(seed) for seed in seeds]
     for candidate in seed_candidates:
         seen_prompts.add(candidate.prompt.lower())
+    state["seed_candidate_count"] = len(seed_candidates)
+    if config["max_evaluations"] and len(seed_candidates) > config["max_evaluations"]:
+        state["seed_candidates_truncated"] = len(seed_candidates) - config["max_evaluations"]
+        seed_candidates = seed_candidates[: config["max_evaluations"]]
+    else:
+        state["seed_candidates_truncated"] = 0
 
     state["phase"] = "evaluating_seeds"
     write_status(out_dir, state)
@@ -1985,6 +2107,13 @@ def run_for_target(
                     perturbator_max_tokens=config["perturbator_max_tokens"],
                     template_config=template_config,
                 )
+            state["perturbator_retry_count"] = int(
+                state.get("perturbator_retry_count", 0)
+            ) + int(perturbator_audit.get("retry_count", 0) or 0)
+            if perturbator_audit.get("fallback_used"):
+                state["perturbator_fallback_count"] = int(
+                    state.get("perturbator_fallback_count", 0)
+                ) + 1
             candidates, rejected = prepare_candidates(
                 objective=objective,
                 variants=variants,
@@ -2115,6 +2244,18 @@ def run_for_target(
         "saved_seed_info": saved_seed_info,
         "archive_path": str(archive_path),
         "affordances_path": str(affordances_path),
+        "execution_metrics": {
+            "completion_state": "completed",
+            "target_error_count": int(state.get("target_error_count", 0)),
+            "candidate_exception_count": int(state.get("candidate_exception_count", 0)),
+            "judge_fallback_count": int(state.get("judge_fallback_count", 0)),
+            "perturbator_fallback_count": int(state.get("perturbator_fallback_count", 0)),
+            "target_retry_count": int(state.get("target_retry_count", 0)),
+            "judge_retry_count": int(state.get("judge_retry_count", 0)),
+            "perturbator_retry_count": int(state.get("perturbator_retry_count", 0)),
+            "seed_candidate_count": int(state.get("seed_candidate_count", 0)),
+            "seed_candidates_truncated": int(state.get("seed_candidates_truncated", 0)),
+        },
         "objective_metrics": objective_metrics,
         "top": top,
     }
@@ -2154,10 +2295,12 @@ def write_summary(
         "",
     ]
     for summary in summaries:
+        execution_metrics = summary.get("execution_metrics") or {}
         lines.extend(
             [
                 f"## Target: `{summary['target_model']}`",
                 "",
+                f"- Completion state: `{execution_metrics.get('completion_state', 'completed')}`",
                 f"- Evaluations: {summary['evaluations']}",
                 f"- Archive cells: {summary['archive_cells']}",
                 f"- Best score: {summary['best_score']}",
@@ -2170,6 +2313,12 @@ def write_summary(
                 f"- Affordances: `{summary['affordances_path']}`",
             ]
         )
+        if summary.get("error"):
+            lines.append(f"- Error: `{summary['error']}`")
+        for name, value in execution_metrics.items():
+            if name == "completion_state":
+                continue
+            lines.append(f"- {name}: `{value}`")
         if summary.get("saved_seed_info"):
             seed_info = summary["saved_seed_info"]
             seed_parts = [
@@ -2183,10 +2332,10 @@ def write_summary(
                     f"`{seed_info.get('near_miss_updated', 0)}` updated"
                 )
             lines.append("".join(seed_parts))
-        for name, value in summary["objective_metrics"].items():
+        for name, value in summary.get("objective_metrics", {}).items():
             lines.append(f"- {name}: `{value}`")
         lines.append("")
-        for index, item in enumerate(summary["top"], start=1):
+        for index, item in enumerate(summary.get("top", []), start=1):
             final_score = evaluation_final_score(item)
             lines.extend(
                 [
@@ -2220,4 +2369,4 @@ def write_summary(
                         "",
                     ]
                 )
-    (out_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
+    write_text(out_dir / "summary.md", "\n".join(lines))
