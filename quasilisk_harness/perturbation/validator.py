@@ -43,7 +43,12 @@ DIRECT_ADJUDICATION_TERMS = (
     "direct verdict",
     "give a verdict",
     "give your verdict",
+    "give one direct verdict",
     "state a verdict",
+    "state one direct verdict",
+    "state one clear verdict",
+    "state one unambiguous answer",
+    "one unambiguous verdict",
     "considered conclusion",
     "which side is right",
     "are the objections binding",
@@ -100,7 +105,8 @@ def validate_planned_prompt(
             rubric["objective_fit"] = 0.0
 
     objective_valid, objective_reason = objective.validate_prompt(prompt)
-    if objective_valid:
+    scaffold_reasons = {"philosophical_label_scaffold", "conditional_framework_scaffold"}
+    if objective_valid and not scaffold_reasons.intersection(reasons):
         rubric["objective_fit"] = 1.0
     elif objective_reason and objective_reason not in reasons:
         reasons.append(objective_reason)

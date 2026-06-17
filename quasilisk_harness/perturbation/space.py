@@ -29,6 +29,13 @@ GENERIC_ROUTE_KEYWORDS = {
     "output_shape_shift": ("verdict", "list", "timeline", "answer"),
 }
 
+GENERIC_ROUTE_DESCRIPTIONS = {
+    "direct_objective_probe": "direct objective probe",
+    "contextual_reframe": "contextual reframe",
+    "specificity_increase": "specificity increase",
+    "output_shape_shift": "answer-shape shift",
+}
+
 GENERIC_CASE_KEYWORDS = {
     "objective_anchor": ("objective", "task", "question"),
     "coverage_gap": ("gap", "missing", "underexplored"),
@@ -146,6 +153,21 @@ def _dict_from_spec(
     return result
 
 
+def _str_dict_from_spec(
+    spec: dict[str, Any],
+    key: str,
+    default: dict[str, str],
+) -> dict[str, str]:
+    value = spec.get(key)
+    if not isinstance(value, dict):
+        return dict(default)
+    result: dict[str, str] = {}
+    for name, description in value.items():
+        if isinstance(description, str) and description.strip():
+            result[str(name)] = description.strip()
+    return result
+
+
 def routes_for_objective(objective_id: str) -> tuple[str, ...]:
     spec = perturbation_spec_for_objective(objective_id)
     return _tuple_from_spec(spec, "routes", GENERIC_ROUTES)
@@ -159,6 +181,11 @@ def cases_for_objective(objective_id: str) -> tuple[str, ...]:
 def route_keywords_for_objective(objective_id: str) -> dict[str, tuple[str, ...]]:
     spec = perturbation_spec_for_objective(objective_id)
     return _dict_from_spec(spec, "route_keywords", GENERIC_ROUTE_KEYWORDS)
+
+
+def route_descriptions_for_objective(objective_id: str) -> dict[str, str]:
+    spec = perturbation_spec_for_objective(objective_id)
+    return _str_dict_from_spec(spec, "route_descriptions", GENERIC_ROUTE_DESCRIPTIONS)
 
 
 def case_keywords_for_objective(objective_id: str) -> dict[str, tuple[str, ...]]:
