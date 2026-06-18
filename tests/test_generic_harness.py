@@ -80,6 +80,41 @@ class _FinisherTestClient:
 
 
 class GenericHarnessTests(unittest.TestCase):
+    def test_merge_config_preserves_file_token_limits_without_cli_override(self):
+        parser = build_arg_parser()
+        args = parser.parse_args([])
+        config = merge_config(
+            {
+                "target_max_tokens": 500,
+                "perturbator_max_tokens": 700,
+                "judge_max_tokens": 900,
+            },
+            args,
+        )
+        self.assertEqual(config["target_max_tokens"], 500)
+        self.assertEqual(config["perturbator_max_tokens"], 700)
+        self.assertEqual(config["judge_max_tokens"], 900)
+        self.assertEqual(config["cli_token_limits"], [])
+
+    def test_merge_config_max_output_tokens_overrides_all_token_limits(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["--max-output-tokens", "321"])
+        config = merge_config(
+            {
+                "target_max_tokens": 500,
+                "perturbator_max_tokens": 700,
+                "judge_max_tokens": 900,
+            },
+            args,
+        )
+        self.assertEqual(config["target_max_tokens"], 321)
+        self.assertEqual(config["perturbator_max_tokens"], 321)
+        self.assertEqual(config["judge_max_tokens"], 321)
+        self.assertEqual(
+            set(config["cli_token_limits"]),
+            {"target_max_tokens", "perturbator_max_tokens", "judge_max_tokens"},
+        )
+
     def test_openrouter_client_retries_retryable_empty_choices_payload(self):
         calls: list[dict] = []
 
@@ -1155,7 +1190,7 @@ class GenericHarnessTests(unittest.TestCase):
             )
             self.assertIn(expected_phrase, messages[0]["content"])
 
-    def test_token_limits_require_cli_flags(self):
+    def test_token_limits_preserve_file_config_without_cli_flags(self):
         parser = build_arg_parser()
         args = parser.parse_args([])
         config = merge_config(
@@ -1166,9 +1201,9 @@ class GenericHarnessTests(unittest.TestCase):
             },
             args,
         )
-        self.assertIsNone(config["target_max_tokens"])
-        self.assertIsNone(config["perturbator_max_tokens"])
-        self.assertIsNone(config["judge_max_tokens"])
+        self.assertEqual(config["target_max_tokens"], 10)
+        self.assertEqual(config["perturbator_max_tokens"], 20)
+        self.assertEqual(config["judge_max_tokens"], 30)
 
         args = parser.parse_args(["--max-output-tokens", "123"])
         config = merge_config({}, args)

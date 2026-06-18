@@ -183,12 +183,14 @@ def merge_config(file_config: dict[str, Any], cli_args: argparse.Namespace) -> d
     config = dict(DEFAULT_CONFIG)
     config.update(file_config)
     cli_token_limits: set[str] = set()
+    cli_shared_token_limit = False
     for key, value in vars(cli_args).items():
         if key in {"config", "list_objectives"}:
             continue
         if value is None:
             continue
         if key == "max_output_tokens":
+            cli_shared_token_limit = True
             for token_key in TOKEN_LIMIT_KEYS:
                 config[token_key] = value
             cli_token_limits.update(TOKEN_LIMIT_KEYS)
@@ -201,8 +203,9 @@ def merge_config(file_config: dict[str, Any], cli_args: argparse.Namespace) -> d
             config[key] = str(value)
         else:
             config[key] = value
-    for key in TOKEN_LIMIT_KEYS - cli_token_limits:
-        config[key] = None
+    if cli_shared_token_limit:
+        for key in TOKEN_LIMIT_KEYS - cli_token_limits:
+            config[key] = None
     config["cli_token_limits"] = sorted(cli_token_limits)
     if isinstance(config.get("target_models"), str):
         config["target_models"] = split_models([config["target_models"]])
