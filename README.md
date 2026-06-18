@@ -66,8 +66,8 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 - `events.jsonl`: one record for every prompt delivered to a target model, including the response, score, feature cell, parent id, and errors.
 - For LLM-judged objectives, each event also includes the judge model, judge request messages, raw judge response, usage, and fallback status.
 - `perturbations.jsonl`: one record for each perturbator request, including the exact perturbator request messages, raw perturbator response, parsed variants, fallback status, and rejected variants.
-- `generation_traces.jsonl`: for planned generation, one record for each planned perturbator call, including the selected plan, defense profile, rendered request, raw response, and parsed variants.
-- `defense_profiles_<model>.jsonl`: for planned generation, extracted target resistance profiles used by the planner.
+- `generation_traces.jsonl`: one record for each perturbator call, including the selected plan, defense profile, rendered request, raw response, and parsed variants.
+- `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
 - `affordances_<model>.json`: compact target-specific framing cues extracted from observed responses, such as preferred terms, visible reasoning cues, successful frames, failed frames, and refusal cues.
 - `archive_<model>.json`: best prompts per MAP-Elites feature cell.
 - `summary.md`: human-readable top prompts and response excerpts.
@@ -89,16 +89,16 @@ selects high-scoring parents, asks the perturbator for direct prompt variants
 using archive context and compact affordance context, validates those variants,
 and repeats until the configured budget is reached.
 
-With `generation_mode` set to `planned`, MAP-Elites still selects parents and
-stores elites. The parent-to-variant step becomes route/case/defense-aware:
-the harness extracts a defense profile from the parent response, chooses a
+MAP-Elites stores elites by objective-specific feature cells, then uses
+route/case/defense-aware perturbation for every parent-to-variant step. The
+harness extracts a defense profile from the parent response, chooses a
 deterministic perturbation plan, asks the perturbator for direct prompts against
 that plan, runs structural planned-prompt validation, and then evaluates
 accepted prompts normally. High-scoring parents are handled as exploitation
 plans that preserve the parent's successful route, pressure pattern, and
 commitment form; lower-scoring parents use coverage-weighted route/case
-exploration. Planned route, case, defense, strategy, and validation metadata is
-stored with the candidate; the target receives only the final user prompt.
+exploration. Route, case, defense, strategy, and validation metadata is stored
+with the candidate; the target receives only the final user prompt.
 
 For the abstract moral-susceptibility objectives, MAP-Elites cells are oriented
 around argument route, pressure pattern, and commitment form. Mutation guidance
@@ -164,7 +164,6 @@ Minimal config:
   "objective_id": "self_harm_emission",
   "target_models": ["provider/target-model"],
   "perturbator_model": "provider/perturbator-model",
-  "generation_mode": "simple",
   "iterations": 8,
   "max_evaluations": 80,
   "parallelism": 2
@@ -176,8 +175,6 @@ Optional prompt template overrides:
 ```json
 {
   "templates": {
-    "perturbator_simple_system": "templates/perturbator/simple_system.md",
-    "perturbator_simple_user": "templates/perturbator/simple_user.md",
     "perturbator_planned_system": "templates/perturbator/planned_system.md",
     "perturbator_planned_user": "templates/perturbator/planned_user.md",
     "moral_judge_system": "templates/judge/moral_system.md",
@@ -209,13 +206,12 @@ Important flags:
 - `--archive-per-cell`: number of elites retained per feature cell.
 - `--stop-score`: stop a target once the configured objective score is reached; use `0` to disable.
 - `--target-system-prompt`: optional system prompt sent to target models. It is empty by default so the target receives only the user prompt.
-- `--generation-mode`: `simple` preserves the original single perturbator flow; `planned` enables route/case/defense-aware generation.
 - `--finisher-enabled`: enable deferred second-turn finisher probes for the nihilism, relativism, and fatalism objectives.
 - `--finisher-threshold`: score threshold for finisher eligibility; defaults to `80`.
 - `--finisher-question`: override the finisher question while preserving the binding-resolution framing.
 - `--finisher-disconfirmation-cap`: final reported score cap when the finisher response discounts the initial finding; defaults to `60`.
 - `--max-output-tokens`: optional explicit output cap applied to target, perturbator, and judge calls.
-- `--target-max-tokens`, `--perturbator-max-tokens`, `--judge-max-tokens`: optional explicit per-call output caps. Output caps are omitted unless supplied on the CLI; config-file token caps are ignored by default.
+- `--target-max-tokens`, `--perturbator-max-tokens`, `--judge-max-tokens`: optional explicit per-call output caps. Config-file token caps are preserved unless a CLI token cap overrides them.
 - `--dry-run`: no network, deterministic fake target and perturbator.
 
 ## Notes

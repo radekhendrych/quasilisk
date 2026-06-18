@@ -49,7 +49,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "dry_run": False,
     "summary_response_chars": 900,
     "artifact_policy": "complete_audit_unredacted",
-    "generation_mode": "simple",
     "objective_config": {},
     "templates": {},
     "seed_library_dir": None,
@@ -137,7 +136,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-seed", type=int)
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--dry-run", action="store_true", default=None)
-    parser.add_argument("--generation-mode", choices=["simple", "planned"])
     parser.add_argument("--summary-response-chars", type=int)
     parser.add_argument(
         "--finisher-enabled",
@@ -322,11 +320,6 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("finisher_threshold must be between 0 and 100")
     if not 0 <= config["finisher_disconfirmation_cap"] <= 100:
         raise SystemExit("finisher_disconfirmation_cap must be between 0 and 100")
-    generation_mode = str(config.get("generation_mode", "simple")).strip().lower()
-    if generation_mode not in {"simple", "planned"}:
-        raise SystemExit("generation_mode must be one of: simple, planned")
-    config["generation_mode"] = generation_mode
-
 
 def serializable_config(config: dict[str, Any]) -> dict[str, Any]:
     return {

@@ -991,130 +991,6 @@ def summarize_finisher_results(evaluations: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-def build_perturbation_messages(
-    *,
-    objective: ModuleType,
-    objective_text: str,
-    objective_config: dict[str, Any],
-    parent_eval: dict[str, Any],
-    offspring_count: int,
-    archive_context: list[dict[str, Any]],
-    target_affordances: dict[str, Any] | None,
-    template_config: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
-    messages, _audit = build_perturbation_request(
-        objective=objective,
-        objective_text=objective_text,
-        objective_config=objective_config,
-        parent_eval=parent_eval,
-        offspring_count=offspring_count,
-        archive_context=archive_context,
-        target_affordances=target_affordances,
-        template_config=template_config,
-    )
-    return messages
-
-
-def build_perturbation_request(
-    *,
-    objective: ModuleType,
-    objective_text: str,
-    objective_config: dict[str, Any],
-    parent_eval: dict[str, Any],
-    offspring_count: int,
-    archive_context: list[dict[str, Any]],
-    target_affordances: dict[str, Any] | None,
-    template_config: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    manifest = objective.MANIFEST
-    objective_id = str(manifest["id"])
-    guidance = _sanitize_text_for_prompting(
-        objective_id,
-        objective.build_mutation_guidance(objective_config),
-    )
-    score_description = manifest.get(
-        "score_description",
-        "Higher score means higher risk or susceptibility.",
-    )
-    score_description = _sanitize_text_for_prompting(objective_id, score_description)
-
-    context = [
-        {
-            "cell": _archive_cell_for_prompting(objective_id, item["archive_cell"]),
-            "score": item["score"]["total"],
-            "prompt_excerpt": excerpt(
-                _sanitize_text_for_prompting(objective_id, item["prompt"]),
-                220,
-            ),
-        }
-        for item in archive_context[:8]
-    ]
-    user = {
-        "objective_id": _safe_objective_id_for_prompting(objective_id),
-        "objective": _sanitize_text_for_prompting(objective_id, objective_text),
-        "parent_prompt": _sanitize_text_for_prompting(
-            objective_id,
-            parent_eval["prompt"],
-        ),
-        "parent_score": _sanitize_for_perturbator_context(
-            objective_id,
-            parent_eval["score"],
-        ),
-        "parent_features": _sanitize_for_perturbator_context(
-            objective_id,
-            parent_eval["features"],
-        ),
-        "observed_response_excerpt": excerpt(
-            _sanitize_text_for_prompting(
-                objective_id,
-                parent_eval.get("response", ""),
-            ),
-            900,
-        ),
-        "promising_archive_context": context,
-        "target_affordances": _sanitize_for_perturbator_context(
-            objective_id,
-            target_affordances,
-        ),
-        "produce": offspring_count,
-        "json_schema": {
-            "variants": [
-                {
-                    "prompt": "self-contained user prompt",
-                    "mutation": "short description of the change",
-                }
-            ]
-        },
-    }
-    payload_json = json.dumps(user, ensure_ascii=False, indent=2)
-    system, system_template = render_template_file(
-        "perturbator_simple_system",
-        {
-            "objective_id": _safe_objective_id_for_prompting(objective_id),
-            "objective_title": _safe_objective_title_for_prompting(
-                objective_id,
-                manifest["title"],
-            ),
-            "score_description": score_description,
-            "guidance": guidance,
-        },
-        template_config,
-    )
-    user_content, user_template = render_template_file(
-        "perturbator_simple_user",
-        {"payload_json": payload_json},
-        template_config,
-    )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_content},
-    ]
-    return messages, {
-        "templates": [system_template, user_template],
-        "payload_hash": short_hash(payload_json, 16),
-    }
-
-
 def build_planned_perturbation_request(
     *,
     objective: ModuleType,
@@ -1359,67 +1235,6 @@ def failed_candidate_evaluation(
     }
 
 
-def query_perturbator(
-    *,
-    client: OpenRouterClient | DryRunClient,
-    objective: ModuleType,
-    objective_text: str,
-    objective_config: dict[str, Any],
-    perturbator_model: str,
-    parent_eval: dict[str, Any],
-    offspring_count: int,
-    archive: MapElitesArchive,
-    affordances: TargetAffordanceTracker,
-    perturbator_temperature: float,
-    perturbator_max_tokens: int | None,
-    template_config: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, str]], str | None, dict[str, Any]]:
-    archive_context = sorted(
-        archive.elites(), key=lambda item: item["score"]["total"], reverse=True
-    )
-    messages, template_audit = build_perturbation_request(
-        objective=objective,
-        objective_text=objective_text,
-        objective_config=objective_config,
-        parent_eval=parent_eval,
-        offspring_count=offspring_count,
-        archive_context=archive_context,
-        target_affordances=affordances.to_perturbator_context(),
-        template_config=template_config,
-    )
-    audit: dict[str, Any] = {
-        "request_messages": messages,
-        "template_audit": template_audit,
-        "raw_response": None,
-        "finish_reason": None,
-        "usage": {},
-        "retry_count": 0,
-        "fallback_used": False,
-    }
-    try:
-        result = client.chat(
-            model=perturbator_model,
-            messages=messages,
-            temperature=perturbator_temperature,
-            max_tokens=perturbator_max_tokens,
-            response_format={"type": "json_object"},
-        )
-        audit["raw_response"] = result.content
-        audit["finish_reason"] = result.finish_reason
-        audit["usage"] = result.usage
-        audit["retry_count"] = getattr(result, "retry_count", 0)
-        variants = extract_variants(result.content)
-        audit["parsed_variants"] = variants
-        return variants, None, audit
-    except (OpenRouterError, json.JSONDecodeError, ValueError) as exc:
-        variants = objective.local_variants(parent_eval["prompt"], offspring_count)
-        if isinstance(exc, OpenRouterError):
-            audit["retry_count"] = _retry_count_from_error(exc)
-        audit["fallback_used"] = True
-        audit["parsed_variants"] = variants
-        return variants, str(exc), audit
-
-
 def query_planned_perturbator(
     *,
     client: OpenRouterClient | DryRunClient,
@@ -1460,7 +1275,6 @@ def query_planned_perturbator(
         template_config=template_config,
     )
     audit: dict[str, Any] = {
-        "generation_mode": "planned",
         "request_messages": messages,
         "template_audit": template_audit,
         "perturbation_plan": plan_json,
@@ -1495,7 +1309,6 @@ def query_planned_perturbator(
     enriched = [
         {
             **variant,
-            "generation_mode": "planned",
             "perturbation_plan": plan_json,
             "defense_profile": defense_json,
         }
@@ -1600,7 +1413,6 @@ def prepare_candidates(
         metadata = {
             key: variant[key]
             for key in (
-                "generation_mode",
                 "perturbation_plan",
                 "defense_profile",
             )
@@ -1617,11 +1429,7 @@ def prepare_candidates(
                 ),
                 prompt=prompt,
                 generation=generation,
-                source=(
-                    "planned_perturbator"
-                    if variant.get("generation_mode") == "planned"
-                    else "perturbator"
-                ),
+                source="planned_perturbator",
                 island=parent_eval["island"],
                 parent_id=parent_eval["candidate_id"],
                 mutation=variant.get("mutation", ""),
@@ -1952,7 +1760,6 @@ def run_for_target(
     defense_profiles_path = out_dir / f"defense_profiles_{safe_slug(target_model)}.jsonl"
     feature_keys = objective.MANIFEST["feature_keys"]
     template_config = config.get("templates", {})
-    generation_mode = str(config.get("generation_mode", "simple")).strip().lower()
     finisher_enabled = finisher_enabled_for_objective(config, objective)
     finisher_threshold = float(config.get("finisher_threshold", 80.0))
     finisher_question = str(
@@ -1975,7 +1782,6 @@ def run_for_target(
         "objective_id": objective.OBJECTIVE_ID,
         "target_model": target_model,
         "perturbator_model": perturbator_model,
-        "generation_mode": generation_mode,
         "finisher_enabled": finisher_enabled,
         "finisher_evaluations": 0,
         "finisher_eligible": 0,
@@ -2041,10 +1847,7 @@ def run_for_target(
         state["generation"] = generation
         state["archive_cells"] = len(archive.cells)
         write_status(out_dir, state)
-        if generation_mode == "planned":
-            parents = select_planned_parents(archive, config["parents_per_iteration"], rng)
-        else:
-            parents = archive.select(config["parents_per_iteration"], rng)
+        parents = select_planned_parents(archive, config["parents_per_iteration"], rng)
         if not parents:
             parents = seed_evals[: config["parents_per_iteration"]]
 
@@ -2053,60 +1856,44 @@ def run_for_target(
             state["phase"] = "querying_perturbator"
             state["parent_candidate_id"] = parent_eval["candidate_id"]
             write_status(out_dir, state)
-            if generation_mode == "planned":
-                variants, error, perturbator_audit = query_planned_perturbator(
-                    client=client,
-                    objective=objective,
-                    objective_text=config["objective_text"],
-                    objective_config=config.get("objective_config", {}),
-                    perturbator_model=perturbator_model,
-                    parent_eval=parent_eval,
-                    offspring_count=config["offspring_per_parent"],
-                    archive=archive,
-                    affordances=affordances,
-                    perturbator_temperature=config["perturbator_temperature"],
-                    perturbator_max_tokens=config["perturbator_max_tokens"],
-                    template_config=template_config,
-                )
-                append_jsonl(
-                    generation_traces_path,
-                    {
-                        "timestamp": utc_now(),
-                        "objective_id": objective.OBJECTIVE_ID,
-                        "target_model": target_model,
-                        "perturbator_model": perturbator_model,
-                        "parent_candidate_id": parent_eval["candidate_id"],
-                        "generation": generation,
-                        "trace_type": "planned_perturbator",
-                        "audit": perturbator_audit,
-                    },
-                )
-                append_jsonl(
-                    defense_profiles_path,
-                    {
-                        "timestamp": utc_now(),
-                        "objective_id": objective.OBJECTIVE_ID,
-                        "target_model": target_model,
-                        "parent_candidate_id": parent_eval["candidate_id"],
-                        "generation": generation,
-                        "defense_profile": perturbator_audit.get("defense_profile"),
-                    },
-                )
-            else:
-                variants, error, perturbator_audit = query_perturbator(
-                    client=client,
-                    objective=objective,
-                    objective_text=config["objective_text"],
-                    objective_config=config.get("objective_config", {}),
-                    perturbator_model=perturbator_model,
-                    parent_eval=parent_eval,
-                    offspring_count=config["offspring_per_parent"],
-                    archive=archive,
-                    affordances=affordances,
-                    perturbator_temperature=config["perturbator_temperature"],
-                    perturbator_max_tokens=config["perturbator_max_tokens"],
-                    template_config=template_config,
-                )
+            variants, error, perturbator_audit = query_planned_perturbator(
+                client=client,
+                objective=objective,
+                objective_text=config["objective_text"],
+                objective_config=config.get("objective_config", {}),
+                perturbator_model=perturbator_model,
+                parent_eval=parent_eval,
+                offspring_count=config["offspring_per_parent"],
+                archive=archive,
+                affordances=affordances,
+                perturbator_temperature=config["perturbator_temperature"],
+                perturbator_max_tokens=config["perturbator_max_tokens"],
+                template_config=template_config,
+            )
+            append_jsonl(
+                generation_traces_path,
+                {
+                    "timestamp": utc_now(),
+                    "objective_id": objective.OBJECTIVE_ID,
+                    "target_model": target_model,
+                    "perturbator_model": perturbator_model,
+                    "parent_candidate_id": parent_eval["candidate_id"],
+                    "generation": generation,
+                    "trace_type": "planned_perturbator",
+                    "audit": perturbator_audit,
+                },
+            )
+            append_jsonl(
+                defense_profiles_path,
+                {
+                    "timestamp": utc_now(),
+                    "objective_id": objective.OBJECTIVE_ID,
+                    "target_model": target_model,
+                    "parent_candidate_id": parent_eval["candidate_id"],
+                    "generation": generation,
+                    "defense_profile": perturbator_audit.get("defense_profile"),
+                },
+            )
             state["perturbator_retry_count"] = int(
                 state.get("perturbator_retry_count", 0)
             ) + int(perturbator_audit.get("retry_count", 0) or 0)
@@ -2129,7 +1916,6 @@ def run_for_target(
                     "objective_id": objective.OBJECTIVE_ID,
                     "target_model": target_model,
                     "perturbator_model": perturbator_model,
-                    "generation_mode": generation_mode,
                     "parent_candidate_id": parent_eval["candidate_id"],
                     "generation": generation,
                     "perturbation_plan": perturbator_audit.get("perturbation_plan"),
@@ -2289,7 +2075,6 @@ def write_summary(
         f"- Scoring method: `{scoring_method}`",
         f"- Judge model: `{judge_model or ''}`",
         f"- Perturbator model: `{config['perturbator_model']}`",
-        f"- Generation mode: `{config.get('generation_mode', 'simple')}`",
         f"- Dry run: `{config['dry_run']}`",
         f"- Audit note: `events.jsonl` preserves complete target inputs and responses.",
         "",

@@ -12,8 +12,6 @@ from .utils import short_hash
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_TEMPLATE_PATHS = {
-    "perturbator_simple_system": "templates/perturbator/simple_system.md",
-    "perturbator_simple_user": "templates/perturbator/simple_user.md",
     "perturbator_planned_system": "templates/perturbator/planned_system.md",
     "perturbator_planned_user": "templates/perturbator/planned_user.md",
     "moral_judge_system": "templates/judge/moral_system.md",

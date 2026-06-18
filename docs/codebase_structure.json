@@ -175,9 +175,9 @@
         "save_successful_model_seeds",
         "make_seed_candidate",
         "validate_variant",
-        "build_perturbation_messages",
+        "build_planned_perturbation_request",
         "evaluate_candidate",
-        "query_perturbator",
+        "query_planned_perturbator",
         "prepare_candidates",
         "evaluate_and_record",
         "run_for_target",
@@ -413,7 +413,7 @@
       "actor": "MapElitesArchive",
       "inputs": [
         "archive elites",
-        "score-weighted random selection"
+        "planned parent selection"
       ],
       "outputs": [
         "parent evaluations"
@@ -421,7 +421,7 @@
     },
     {
       "step": 5,
-      "id": "flow.query_perturbator",
+      "id": "flow.query_planned_perturbator",
       "label": "Generate Prompt Variants",
       "actor": "module.quasilisk_harness.core",
       "inputs": [
@@ -555,7 +555,7 @@
       "id": "artifact.perturbations",
       "path_pattern": "runs/<timestamp>/perturbations.jsonl",
       "format": "jsonl",
-      "producer": "module.quasilisk_harness.core.query_perturbator",
+      "producer": "module.quasilisk_harness.core.query_planned_perturbator",
       "description": "Audit log for perturbator requests, raw responses, parsed variants, fallback status, and rejected variants."
     },
     {
