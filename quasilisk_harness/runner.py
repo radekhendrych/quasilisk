@@ -54,6 +54,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "save_successful_seeds": True,
     "successful_seed_score": None,
     "max_successful_seeds_per_model": 20,
+    "parent_plan_memory_enabled": True,
+    "parent_plan_memory_mode": "block",
+    "parent_plan_regression_threshold": 8.0,
+    "parent_plan_cooldown_generations": 2,
+    "parent_plan_penalty": 15.0,
+    "parent_plan_min_evaluated_children": 1,
     "fail_fast": False,
     "force_out_dir": False,
     "resume": False,
@@ -131,6 +137,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--dry-run", action="store_true", default=None)
     parser.add_argument("--summary-response-chars", type=int)
+    parser.add_argument(
+        "--parent-plan-memory-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable parent-plan outcome memory across MAP-Elites generations.",
+    )
+    parser.add_argument(
+        "--parent-plan-memory-mode",
+        choices=("block", "penalize"),
+        help="Whether regressed parent-plan tuples are blocked or priority-penalized.",
+    )
+    parser.add_argument("--parent-plan-regression-threshold", type=float)
+    parser.add_argument("--parent-plan-cooldown-generations", type=int)
+    parser.add_argument("--parent-plan-penalty", type=float)
+    parser.add_argument("--parent-plan-min-evaluated-children", type=int)
     parser.add_argument(
         "--fail-fast",
         action=argparse.BooleanOptionalAction,
@@ -230,6 +251,8 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "retries",
         "summary_response_chars",
         "max_successful_seeds_per_model",
+        "parent_plan_cooldown_generations",
+        "parent_plan_min_evaluated_children",
     )
     for field in int_fields:
         config[field] = int(config[field])
@@ -240,6 +263,8 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "judge_temperature",
         "timeout",
         "successful_seed_score",
+        "parent_plan_regression_threshold",
+        "parent_plan_penalty",
     )
     for field in float_fields:
         config[field] = float(config[field])
@@ -280,10 +305,21 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("max_evaluations must be >= 0")
     if config["stop_score"] < 0:
         raise SystemExit("stop_score must be >= 0")
+    if config["parent_plan_cooldown_generations"] < 0:
+        raise SystemExit("parent_plan_cooldown_generations must be >= 0")
+    if config["parent_plan_min_evaluated_children"] <= 0:
+        raise SystemExit("parent_plan_min_evaluated_children must be > 0")
+    if config["parent_plan_regression_threshold"] < 0:
+        raise SystemExit("parent_plan_regression_threshold must be >= 0")
+    if config["parent_plan_penalty"] < 0:
+        raise SystemExit("parent_plan_penalty must be >= 0")
+    if config.get("parent_plan_memory_mode") not in {"block", "penalize"}:
+        raise SystemExit("parent_plan_memory_mode must be 'block' or 'penalize'")
     if not isinstance(config.get("objective_config"), dict):
         raise SystemExit("objective_config must be a JSON object")
     if not isinstance(config.get("templates"), dict):
         raise SystemExit("templates must be a JSON object")
+    config["parent_plan_memory_enabled"] = bool(config.get("parent_plan_memory_enabled"))
     config["fail_fast"] = bool(config.get("fail_fast"))
     config["force_out_dir"] = bool(config.get("force_out_dir"))
     config["resume"] = bool(config.get("resume"))

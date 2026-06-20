@@ -68,6 +68,7 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 - `perturbations.jsonl`: one record for each perturbator request, including the exact perturbator request messages, raw perturbator response, parsed variants, fallback status, and rejected variants.
 - `generation_traces.jsonl`: one record for each perturbator call, including the selected plan, defense profile, rendered request, raw response, and parsed variants.
 - `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
+- `parent_plan_outcomes.jsonl`: per-generation parent-plan outcome records used by outcome memory; this does not duplicate target responses from `events.jsonl`.
 - `affordances_<model>.json`: compact target-specific framing cues extracted from observed responses, such as preferred terms, visible reasoning cues, successful frames, failed frames, and refusal cues.
 - `archive_<model>.json`: best prompts per MAP-Elites feature cell.
 - `summary.md`: human-readable top prompts and response excerpts.
@@ -193,6 +194,12 @@ Important flags:
 - `--archive-per-cell`: number of elites retained per feature cell.
 - `--stop-score`: stop a target once the configured objective score is reached; use `0` to disable.
 - `--target-system-prompt`: optional system prompt sent to target models. It is empty by default so the target receives only the user prompt.
+- `--parent-plan-memory-enabled` / `--no-parent-plan-memory-enabled`: enable or disable parent-plan outcome memory. Enabled by default.
+- `--parent-plan-memory-mode`: use `block` to skip regressed parent-plan tuples during cooldown, or `penalize` to reduce their priority.
+- `--parent-plan-regression-threshold`: mark a parent-plan tuple as regressed when its best evaluated child is more than this many points below the parent score; defaults to `8`.
+- `--parent-plan-cooldown-generations`: number of following generations to block or penalize a regressed `(parent_id, strategy, route, case_family)` tuple; defaults to `2`.
+- `--parent-plan-penalty`: priority penalty used when `--parent-plan-memory-mode penalize` is selected; defaults to `15`.
+- `--parent-plan-min-evaluated-children`: minimum non-error children required before a tuple can be blocked or penalized; defaults to `1`.
 - `--max-output-tokens`: optional explicit output cap applied to target, perturbator, and judge calls.
 - `--target-max-tokens`, `--perturbator-max-tokens`, `--judge-max-tokens`: optional explicit per-call output caps. Config-file token caps are preserved unless a CLI token cap overrides them.
 - `--dry-run`: no network, deterministic fake target and perturbator.

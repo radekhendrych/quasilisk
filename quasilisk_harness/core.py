@@ -20,6 +20,7 @@ from .perturbation.defense import (
     score_indicates_contaminated_high_raw_near_miss,
 )
 from .perturbation.models import PerturbationPlan
+from .perturbation.outcome_memory import ParentPlanOutcomeMemory
 from .perturbation.planner import select_plan
 from .perturbation.space import (
     planned_guidance_for_objective,
@@ -891,6 +892,8 @@ def query_planned_perturbator(
     perturbator_temperature: float,
     perturbator_max_tokens: int | None,
     template_config: dict[str, Any] | None = None,
+    outcome_memory: ParentPlanOutcomeMemory | None = None,
+    generation: int = 0,
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
     archive_context = sorted(
         archive.elites(), key=lambda item: item["score"]["total"], reverse=True
@@ -901,6 +904,8 @@ def query_planned_perturbator(
         parent_eval=parent_eval,
         archive_elites=archive_context,
         defense_profile=defense,
+        outcome_memory=outcome_memory,
+        generation=generation,
     )
     defense_json = defense.to_jsonable()
     plan_json = plan.to_jsonable()
@@ -921,6 +926,11 @@ def query_planned_perturbator(
         "template_audit": template_audit,
         "perturbation_plan": plan_json,
         "defense_profile": defense_json,
+        "outcome_memory": (
+            outcome_memory.to_jsonable(generation=generation)
+            if outcome_memory is not None
+            else None
+        ),
         "raw_response": None,
         "finish_reason": None,
         "usage": {},
@@ -1390,10 +1400,27 @@ def run_for_target(
     events_path = out_dir / "events.jsonl"
     perturbations_path = out_dir / "perturbations.jsonl"
     generation_traces_path = out_dir / "generation_traces.jsonl"
+    parent_plan_outcomes_path = out_dir / "parent_plan_outcomes.jsonl"
     affordances_path = out_dir / f"affordances_{safe_slug(target_model)}.json"
     defense_profiles_path = out_dir / f"defense_profiles_{safe_slug(target_model)}.jsonl"
     feature_keys = objective.MANIFEST["feature_keys"]
     template_config = config.get("templates", {})
+    outcome_memory: ParentPlanOutcomeMemory | None = None
+    if config.get("parent_plan_memory_enabled"):
+        outcome_memory = ParentPlanOutcomeMemory(
+            enabled=True,
+            mode=str(config.get("parent_plan_memory_mode", "block")),
+            regression_threshold=float(
+                config.get("parent_plan_regression_threshold", 8.0)
+            ),
+            cooldown_generations=int(
+                config.get("parent_plan_cooldown_generations", 2)
+            ),
+            penalty=float(config.get("parent_plan_penalty", 15.0)),
+            min_evaluated_children=int(
+                config.get("parent_plan_min_evaluated_children", 1)
+            ),
+        )
     archive = MapElitesArchive(config["archive_per_cell"], feature_keys)
     affordances = TargetAffordanceTracker(
         target_model=target_model,
@@ -1421,6 +1448,11 @@ def run_for_target(
         "target_retry_count": 0,
         "judge_retry_count": 0,
         "perturbator_retry_count": 0,
+        "parent_plan_memory_enabled": bool(outcome_memory),
+        "parent_plan_memory_mode": config.get("parent_plan_memory_mode", "block"),
+        "parent_plan_memory_active": 0,
+        "parent_plan_memory_outcomes": 0,
+        "parent_plan_memory_regressions": 0,
     }
     write_status(out_dir, state)
 
@@ -1468,13 +1500,23 @@ def run_for_target(
         state["phase"] = "selecting_parents"
         state["generation"] = generation
         state["archive_cells"] = len(archive.cells)
+        if outcome_memory is not None:
+            outcome_memory.expire(generation)
+            state["parent_plan_memory_active"] = len(
+                outcome_memory.active_entries(generation)
+            )
         write_status(out_dir, state)
         parents = select_planned_parents(archive, config["parents_per_iteration"], rng)
         if not parents:
             parents = seed_evals[: config["parents_per_iteration"]]
 
         generation_candidates: list[Candidate] = []
+        parent_scores: dict[str, float] = {}
         for parent_eval in parents:
+            parent_scores[parent_eval["candidate_id"]] = _score_float(
+                parent_eval.get("score", {}),
+                "total",
+            )
             state["phase"] = "querying_perturbator"
             state["parent_candidate_id"] = parent_eval["candidate_id"]
             write_status(out_dir, state)
@@ -1491,6 +1533,8 @@ def run_for_target(
                 perturbator_temperature=config["perturbator_temperature"],
                 perturbator_max_tokens=config["perturbator_max_tokens"],
                 template_config=template_config,
+                outcome_memory=outcome_memory,
+                generation=generation,
             )
             append_jsonl(
                 generation_traces_path,
@@ -1581,6 +1625,35 @@ def run_for_target(
             events_path=events_path,
             state=state,
         )
+        if outcome_memory is not None:
+            outcome_records = outcome_memory.record_generation_outcomes(
+                generation=generation,
+                parent_scores=parent_scores,
+                child_evaluations=generation_evals,
+            )
+            for outcome_record in outcome_records:
+                append_jsonl(
+                    parent_plan_outcomes_path,
+                    {
+                        "timestamp": utc_now(),
+                        "objective_id": objective.OBJECTIVE_ID,
+                        "target_model": target_model,
+                        **outcome_record,
+                    },
+                )
+            state["parent_plan_memory_outcomes"] = int(
+                state.get("parent_plan_memory_outcomes", 0)
+            ) + len(outcome_records)
+            state["parent_plan_memory_regressions"] = int(
+                state.get("parent_plan_memory_regressions", 0)
+            ) + sum(
+                1
+                for item in outcome_records
+                if item.get("action") in {"blocked", "penalized"}
+            )
+            state["parent_plan_memory_active"] = len(
+                outcome_memory.active_entries(generation + 1)
+            )
         state["archive_cells"] = len(archive.cells)
         write_status(out_dir, state)
 
@@ -1637,6 +1710,15 @@ def run_for_target(
             "perturbator_retry_count": int(state.get("perturbator_retry_count", 0)),
             "seed_candidate_count": int(state.get("seed_candidate_count", 0)),
             "seed_candidates_truncated": int(state.get("seed_candidates_truncated", 0)),
+            "parent_plan_memory_active": int(
+                state.get("parent_plan_memory_active", 0)
+            ),
+            "parent_plan_memory_outcomes": int(
+                state.get("parent_plan_memory_outcomes", 0)
+            ),
+            "parent_plan_memory_regressions": int(
+                state.get("parent_plan_memory_regressions", 0)
+            ),
         },
         "objective_metrics": objective_metrics,
         "top": top,
