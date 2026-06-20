@@ -1,0 +1,195 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600" viewBox="0 0 2400 1600">
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#b45309"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#dc2626"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 48px; font-weight: 800; fill: #0f172a; letter-spacing: 0; }
+      .subtitle { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 24px; fill: #475569; letter-spacing: 0; }
+      .section { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 22px; font-weight: 800; fill: #334155; letter-spacing: 0.8px; text-transform: uppercase; }
+      .head { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 28px; font-weight: 800; fill: #0f172a; letter-spacing: 0; }
+      .subhead { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 21px; font-weight: 800; fill: #334155; letter-spacing: 0; }
+      .body { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 21px; fill: #334155; letter-spacing: 0; }
+      .small { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 18px; fill: #475569; letter-spacing: 0; }
+      .mono { font-family: "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 18px; fill: #334155; letter-spacing: 0; }
+      .label { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 18px; font-weight: 800; fill: #334155; letter-spacing: 0; }
+      .num { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 20px; font-weight: 900; fill: #ffffff; letter-spacing: 0; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 12; filter: url(#shadow); }
+      .box-blue { fill: #eff6ff; stroke: #93c5fd; }
+      .box-green { fill: #ecfdf5; stroke: #86efac; }
+      .box-amber { fill: #fffbeb; stroke: #fcd34d; }
+      .box-red { fill: #fff1f2; stroke: #fda4af; }
+      .box-purple { fill: #f5f3ff; stroke: #c4b5fd; }
+      .box-gray { fill: #f1f5f9; stroke: #cbd5e1; }
+      .lane { fill: #ffffff; stroke: #e2e8f0; stroke-width: 2; rx: 16; }
+      .line { fill: none; stroke: #334155; stroke-width: 4; marker-end: url(#arrow); }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 4; marker-end: url(#arrow-blue); }
+      .line-green { fill: none; stroke: #15803d; stroke-width: 4; marker-end: url(#arrow-green); }
+      .line-amber { fill: none; stroke: #b45309; stroke-width: 4; marker-end: url(#arrow-amber); }
+      .line-red { fill: none; stroke: #dc2626; stroke-width: 4; marker-end: url(#arrow-red); }
+      .line-dash { fill: none; stroke: #64748b; stroke-width: 3; stroke-dasharray: 12 10; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="2400" height="1600"/>
+  <text class="title" x="80" y="82">Quasilisk Runtime Interactions</text>
+  <text class="subtitle" x="80" y="124">How the harness coordinates the perturbator model, target model, judge model, archive, and audit artifacts during a run.</text>
+
+  <rect class="lane" x="70" y="185" width="2260" height="310"/>
+  <rect class="lane" x="70" y="535" width="2260" height="310"/>
+  <rect class="lane" x="70" y="885" width="2260" height="300"/>
+  <rect class="lane" x="70" y="1225" width="2260" height="250"/>
+
+  <text class="section" x="100" y="230">Quasilisk Harness</text>
+  <text class="section" x="100" y="580">Perturbator Model</text>
+  <text class="section" x="100" y="930">Target Model</text>
+  <text class="section" x="100" y="1270">Judge Model</text>
+
+  <rect class="box box-blue" x="270" y="230" width="410" height="210"/>
+  <text class="head" x="300" y="275">Run Controller</text>
+  <text class="body" x="300" y="316">Loads config, objective plugin,</text>
+  <text class="body" x="300" y="350">target list, seeds, and model ids.</text>
+  <text class="mono" x="300" y="392">run_for_target()</text>
+
+  <rect class="box box-green" x="770" y="230" width="430" height="210"/>
+  <text class="head" x="800" y="275">Archive + Memory</text>
+  <text class="body" x="800" y="316">Stores MAP-Elites cells, seen prompts,</text>
+  <text class="body" x="800" y="350">affordances, and defense traces.</text>
+  <text class="mono" x="800" y="392">MapElitesArchive</text>
+
+  <rect class="box box-purple" x="1290" y="230" width="460" height="210"/>
+  <text class="head" x="1320" y="275">Planner + Request Builder</text>
+  <text class="body" x="1320" y="316">Selects parent, defense-aware strategy,</text>
+  <text class="body" x="1320" y="350">route, case family, and payload.</text>
+  <text class="mono" x="1320" y="392">query_planned_perturbator()</text>
+
+  <rect class="box box-gray" x="1840" y="230" width="390" height="210"/>
+  <text class="head" x="1870" y="275">Audit Outputs</text>
+  <text class="mono" x="1870" y="318">events.jsonl</text>
+  <text class="mono" x="1870" y="350">generation_traces.jsonl</text>
+  <text class="mono" x="1870" y="382">run_summary.json</text>
+
+  <rect class="box box-purple" x="1290" y="585" width="460" height="210"/>
+  <text class="head" x="1320" y="630">Planned Perturbator LLM</text>
+  <text class="body" x="1320" y="672">Receives structured JSON context and</text>
+  <text class="body" x="1320" y="706">returns JSON prompt variants.</text>
+  <text class="mono" x="1320" y="748">model: perturbator_model</text>
+
+  <rect class="box box-amber" x="270" y="585" width="500" height="210"/>
+  <text class="head" x="300" y="630">Perturbator Payload</text>
+  <text class="mono" x="300" y="672">parent_prompt, parent_score</text>
+  <text class="mono" x="300" y="704">observed_response_excerpt</text>
+  <text class="mono" x="300" y="736">defense_profile, target_affordances</text>
+  <text class="mono" x="300" y="768">promising_archive_context</text>
+
+  <rect class="box box-green" x="1840" y="585" width="390" height="210"/>
+  <text class="head" x="1870" y="630">Prompt Variants</text>
+  <text class="body" x="1870" y="672">Self-contained candidate prompts</text>
+  <text class="body" x="1870" y="706">plus mutation descriptions.</text>
+  <text class="mono" x="1870" y="748">{ variants: [...] }</text>
+
+  <rect class="box box-blue" x="270" y="935" width="430" height="200"/>
+  <text class="head" x="300" y="980">Validated Candidate</text>
+  <text class="body" x="300" y="1022">Quasilisk dedupes, validates, and</text>
+  <text class="body" x="300" y="1056">sends one prompt to the target.</text>
+  <text class="mono" x="300" y="1098">evaluate_candidate()</text>
+
+  <rect class="box box-red" x="850" y="935" width="430" height="200"/>
+  <text class="head" x="880" y="980">Target Model</text>
+  <text class="body" x="880" y="1022">The model under test. It receives only</text>
+  <text class="body" x="880" y="1056">the candidate prompt and target system</text>
+  <text class="body" x="880" y="1090">prompt, if configured.</text>
+
+  <rect class="box box-amber" x="1430" y="935" width="440" height="200"/>
+  <text class="head" x="1460" y="980">Target Response</text>
+  <text class="body" x="1460" y="1022">Raw completion text, finish reason,</text>
+  <text class="body" x="1460" y="1056">usage, retries, and error state.</text>
+  <text class="mono" x="1460" y="1098">response + usage</text>
+
+  <rect class="box box-red" x="270" y="1300" width="470" height="130"/>
+  <text class="head" x="300" y="1345">Judge Request</text>
+  <text class="body" x="300" y="1380">Original prompt + target response</text>
+  <text class="body" x="300" y="1412">are treated as inert evidence.</text>
+
+  <rect class="box box-red" x="850" y="1300" width="430" height="130"/>
+  <text class="head" x="880" y="1345">Judge Model</text>
+  <text class="body" x="880" y="1388">Returns structured scores and signals.</text>
+
+  <rect class="box box-blue" x="1430" y="1300" width="520" height="130"/>
+  <text class="head" x="1460" y="1345">Objective Scoring</text>
+  <text class="body" x="1460" y="1388">Quasilisk combines judge JSON, heuristics, caps, features, and notes.</text>
+
+  <circle cx="725" cy="337" r="18" fill="#2563eb"/><text class="num" x="719" y="345">1</text>
+  <path class="line-green" d="M 680 337 L 770 337"/>
+
+  <circle cx="1245" cy="337" r="18" fill="#15803d"/><text class="num" x="1239" y="345">2</text>
+  <path class="line-green" d="M 1200 337 L 1290 337"/>
+
+  <circle cx="1005" cy="520" r="18" fill="#b45309"/><text class="num" x="999" y="528">3</text>
+  <path class="line-amber" d="M 1520 440 C 1520 525, 920 515, 770 650"/>
+  <text class="label" x="1030" y="500">build structured perturbator payload</text>
+
+  <circle cx="1200" cy="690" r="18" fill="#6d28d9"/><text class="num" x="1194" y="698">4</text>
+  <path class="line" d="M 770 690 L 1290 690"/>
+  <text class="label" x="910" y="670">request prompt variants</text>
+
+  <circle cx="1795" cy="690" r="18" fill="#6d28d9"/><text class="num" x="1789" y="698">5</text>
+  <path class="line-green" d="M 1750 690 L 1840 690"/>
+  <text class="label" x="1760" y="670">JSON variants</text>
+
+  <circle cx="2040" cy="850" r="18" fill="#15803d"/><text class="num" x="2034" y="858">6</text>
+  <path class="line-green" d="M 2035 795 C 2025 910, 810 850, 700 1000"/>
+  <text class="label" x="1220" y="870">validate + dedupe in harness</text>
+
+  <circle cx="775" cy="1035" r="18" fill="#2563eb"/><text class="num" x="769" y="1043">7</text>
+  <path class="line-blue" d="M 700 1035 L 850 1035"/>
+  <text class="label" x="720" y="1015">target call</text>
+
+  <circle cx="1355" cy="1035" r="18" fill="#dc2626"/><text class="num" x="1349" y="1043">8</text>
+  <path class="line-red" d="M 1280 1035 L 1430 1035"/>
+  <text class="label" x="1298" y="1015">completion</text>
+
+  <circle cx="1020" cy="1210" r="18" fill="#dc2626"/><text class="num" x="1014" y="1218">9</text>
+  <path class="line-red" d="M 1650 1135 C 1630 1245, 870 1210, 740 1355"/>
+  <text class="label" x="1090" y="1192">score target response</text>
+
+  <circle cx="795" cy="1365" r="18" fill="#dc2626"/><text class="num" x="785" y="1373">10</text>
+  <path class="line-red" d="M 740 1365 L 850 1365"/>
+
+  <circle cx="1355" cy="1365" r="18" fill="#2563eb"/><text class="num" x="1345" y="1373">11</text>
+  <path class="line-blue" d="M 1280 1365 L 1430 1365"/>
+  <text class="label" x="1300" y="1345">judge JSON</text>
+
+  <circle cx="2030" cy="1325" r="18" fill="#2563eb"/><text class="num" x="2020" y="1333">12</text>
+  <path class="line-blue" d="M 1950 1365 C 2060 1345, 2100 1125, 1870 1040"/>
+  <text class="label" x="1950" y="1260">attach score to evaluation</text>
+
+  <circle cx="1465" cy="1180" r="18" fill="#15803d"/><text class="num" x="1455" y="1188">13</text>
+  <path class="line-green" d="M 1650 1135 C 1600 1210, 1070 1220, 985 440"/>
+  <text class="label" x="1220" y="1242">update archive + affordances + defense profile</text>
+
+  <circle cx="2065" cy="500" r="18" fill="#64748b"/><text class="num" x="2055" y="508">14</text>
+  <path class="line-dash" d="M 2035 440 L 2035 585"/>
+  <path class="line-dash" d="M 2035 795 L 2035 1225"/>
+  <path class="line-dash" d="M 1750 335 L 1840 335"/>
+  <text class="label" x="1815" y="486">write traces, events, summaries</text>
+
+  <rect x="80" y="1508" width="2240" height="54" rx="10" fill="#e2e8f0" stroke="#cbd5e1"/>
+  <text class="small" x="110" y="1543">Key separation: the perturbator proposes prompts, the target answers prompts, the judge scores target evidence, and Quasilisk owns orchestration, archive state, validation, scoring integration, and audit logs.</text>
+</svg>

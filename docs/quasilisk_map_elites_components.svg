@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600" viewBox="0 0 2400 1600">
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#15803d"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto-start-reverse">
+      <path d="M 0 1 L 11 6 L 0 11 z" fill="#b45309"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 48px; font-weight: 800; fill: #0f172a; letter-spacing: 0; }
+      .subtitle { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 24px; fill: #475569; letter-spacing: 0; }
+      .section { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 22px; font-weight: 800; fill: #334155; letter-spacing: 0.8px; text-transform: uppercase; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 12; filter: url(#shadow); }
+      .box-blue { fill: #eff6ff; stroke: #93c5fd; }
+      .box-green { fill: #ecfdf5; stroke: #86efac; }
+      .box-amber { fill: #fffbeb; stroke: #fcd34d; }
+      .box-red { fill: #fff1f2; stroke: #fda4af; }
+      .box-purple { fill: #f5f3ff; stroke: #c4b5fd; }
+      .box-gray { fill: #f1f5f9; stroke: #cbd5e1; }
+      .head { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 27px; font-weight: 800; fill: #0f172a; letter-spacing: 0; }
+      .body { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 21px; fill: #334155; letter-spacing: 0; }
+      .small { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 18px; fill: #475569; letter-spacing: 0; }
+      .mono { font-family: "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 19px; fill: #334155; letter-spacing: 0; }
+      .label { font-family: Inter, "DejaVu Sans", Arial, sans-serif; font-size: 18px; font-weight: 700; fill: #334155; letter-spacing: 0; }
+      .line { fill: none; stroke: #334155; stroke-width: 4; marker-end: url(#arrow); }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 4; marker-end: url(#arrow-blue); }
+      .line-green { fill: none; stroke: #15803d; stroke-width: 4; marker-end: url(#arrow-green); }
+      .line-amber { fill: none; stroke: #b45309; stroke-width: 4; marker-end: url(#arrow-amber); }
+      .line-dash { fill: none; stroke: #64748b; stroke-width: 3; stroke-dasharray: 12 10; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="2400" height="1600"/>
+  <text class="title" x="80" y="82">Quasilisk MAP-Elites and Planned Perturbation Loop</text>
+  <text class="subtitle" x="80" y="124">Archive-guided prompt search: evaluated target responses shape defense profiles, affordances, plans, and the next perturbator call.</text>
+
+  <text class="section" x="92" y="205">Objective Inputs</text>
+  <rect class="box box-gray" x="80" y="230" width="430" height="230"/>
+  <text class="head" x="110" y="275">Objective Plugin</text>
+  <text class="body" x="110" y="318">Defines scoring and behavior descriptors</text>
+  <text class="mono" x="110" y="354">MANIFEST.feature_keys</text>
+  <text class="mono" x="110" y="386">classify_features(prompt)</text>
+  <text class="mono" x="110" y="418">score_response(prompt, response)</text>
+
+  <rect class="box box-gray" x="80" y="500" width="430" height="190"/>
+  <text class="head" x="110" y="545">Seed Prompts</text>
+  <text class="body" x="110" y="588">Initial candidates from objective or</text>
+  <text class="body" x="110" y="620">model-specific seed libraries</text>
+  <text class="small" x="110" y="655">Evaluated before perturbation begins</text>
+
+  <text class="section" x="740" y="205">Evaluation and Archive</text>
+  <rect class="box box-blue" x="650" y="230" width="500" height="330"/>
+  <text class="head" x="680" y="275">Candidate Evaluation</text>
+  <text class="body" x="680" y="320">1. Target model receives candidate prompt</text>
+  <text class="body" x="680" y="354">2. Target response is scored by judge</text>
+  <text class="body" x="680" y="388">3. Objective features produce archive cell</text>
+  <text class="body" x="680" y="422">4. Evaluation record is written to audit log</text>
+  <text class="mono" x="680" y="468">score.total, judge_signals, notes</text>
+  <text class="mono" x="680" y="500">archive_cell = feature tuple</text>
+
+  <rect class="box box-green" x="650" y="640" width="500" height="320"/>
+  <text class="head" x="680" y="685">MAP-Elites Archive</text>
+  <text class="body" x="680" y="730">Cell key comes from objective feature keys</text>
+  <text class="body" x="680" y="764">Each cell keeps top scored prompt elites</text>
+  <text class="body" x="680" y="798">Parent selection samples promising elites</text>
+  <text class="mono" x="680" y="846">route | pressure | commitment</text>
+  <text class="mono" x="680" y="878">capacity_per_cell, prompt_hash dedupe</text>
+  <text class="small" x="680" y="922">Not pure MAP-Elites: LLM emitter, score-biased selection,</text>
+  <text class="small" x="680" y="948">and response-derived planning influence the search.</text>
+
+  <rect class="box box-purple" x="650" y="1030" width="500" height="210"/>
+  <text class="head" x="680" y="1075">Candidate Gate</text>
+  <text class="body" x="680" y="1120">Validates planned prompts, repairs narrow cases,</text>
+  <text class="body" x="680" y="1154">dedupes against seen prompts, then returns</text>
+  <text class="body" x="680" y="1188">offspring to the evaluation step.</text>
+
+  <text class="section" x="1420" y="205">Search Context</text>
+  <rect class="box box-red" x="1330" y="230" width="460" height="260"/>
+  <text class="head" x="1360" y="275">Defense Profile</text>
+  <text class="body" x="1360" y="318">Extracted from parent response plus score</text>
+  <text class="body" x="1360" y="352">notes and judge signals</text>
+  <text class="mono" x="1360" y="398">capped_high_raw_score</text>
+  <text class="mono" x="1360" y="430">contaminated_high_raw_score</text>
+  <text class="mono" x="1360" y="462">conditional_only, category_scaffolded</text>
+
+  <rect class="box box-amber" x="1330" y="560" width="460" height="280"/>
+  <text class="head" x="1360" y="605">Target Affordance Tracker</text>
+  <text class="body" x="1360" y="648">Run-level memory from evaluated responses</text>
+  <text class="mono" x="1360" y="694">successful_frames: score &gt;= 70</text>
+  <text class="mono" x="1360" y="726">promising_frames: 0 &lt; score &lt; 70</text>
+  <text class="mono" x="1360" y="758">failed_frames: refusal or empty</text>
+  <text class="mono" x="1360" y="790">successful_examples: top 5, feed top 3</text>
+
+  <rect class="box box-green" x="1330" y="910" width="460" height="250"/>
+  <text class="head" x="1360" y="955">Perturbation Planner</text>
+  <text class="body" x="1360" y="998">Chooses route, case family, defense focus,</text>
+  <text class="body" x="1360" y="1032">strategy, and mutation scope</text>
+  <text class="mono" x="1360" y="1080">exploit_parent_form</text>
+  <text class="mono" x="1360" y="1112">exploit_near_miss_form</text>
+  <text class="mono" x="1360" y="1144">repair_scaffolded_high_raw_form</text>
+
+  <text class="section" x="1910" y="205">LLM Emitter</text>
+  <rect class="box box-purple" x="1880" y="230" width="440" height="390"/>
+  <text class="head" x="1910" y="275">Planned Perturbator</text>
+  <text class="body" x="1910" y="320">Consumes a structured JSON payload:</text>
+  <text class="mono" x="1910" y="366">parent_prompt</text>
+  <text class="mono" x="1910" y="398">observed_response_excerpt</text>
+  <text class="mono" x="1910" y="430">perturbation_plan</text>
+  <text class="mono" x="1910" y="462">defense_profile</text>
+  <text class="mono" x="1910" y="494">promising_archive_context</text>
+  <text class="mono" x="1910" y="526">target_affordances</text>
+  <text class="body" x="1910" y="574">Returns JSON prompt variants.</text>
+
+  <rect class="box box-gray" x="1880" y="700" width="440" height="240"/>
+  <text class="head" x="1910" y="745">Sanitization Layer</text>
+  <text class="body" x="1910" y="788">Internal objective and route ids are replaced</text>
+  <text class="body" x="1910" y="822">with target-facing descriptions before the</text>
+  <text class="body" x="1910" y="856">perturbator sees them.</text>
+
+  <text class="section" x="98" y="1015">Audit and Outputs</text>
+  <rect class="box box-gray" x="80" y="1040" width="470" height="290"/>
+  <text class="head" x="110" y="1085">Persistent Artifacts</text>
+  <text class="mono" x="110" y="1132">events.jsonl</text>
+  <text class="mono" x="110" y="1164">generation_traces.jsonl</text>
+  <text class="mono" x="110" y="1196">defense_profiles_*.jsonl</text>
+  <text class="mono" x="110" y="1228">affordances_*.json</text>
+  <text class="mono" x="110" y="1260">archive_*.json</text>
+  <text class="mono" x="110" y="1292">run_summary.json</text>
+
+  <rect class="box box-blue" x="1330" y="1230" width="990" height="190"/>
+  <text class="head" x="1360" y="1275">Complete Perturbator Request Shape</text>
+  <text class="body" x="1360" y="1320">The perturbator never receives only a raw parent prompt. It receives:</text>
+  <text class="body" x="1360" y="1354">parent score/features, response excerpt, defense diagnosis, planner decision, top archive context,</text>
+  <text class="body" x="1360" y="1388">target affordance memory, and required JSON shape.</text>
+  <text class="small" x="1360" y="1422">This is archive-guided LLM search with MAP-Elites structure, not classical random mutation.</text>
+
+  <path class="line-blue" d="M 510 345 C 570 345, 590 345, 650 345"/>
+  <path class="line-blue" d="M 510 595 C 570 595, 590 410, 650 410"/>
+  <text class="label" x="540" y="326">candidates</text>
+
+  <path class="line-green" d="M 900 560 L 900 640"/>
+  <text class="label" x="916" y="607">insert/update elites</text>
+
+  <path class="line-amber" d="M 1150 800 C 1220 800, 1240 355, 1330 355"/>
+  <text class="label" x="1168" y="375">selected parent response + score</text>
+
+  <path class="line-amber" d="M 1150 810 C 1220 810, 1240 700, 1330 700"/>
+  <text class="label" x="1190" y="680">all evaluations update memory</text>
+
+  <path class="line-green" d="M 1150 825 C 1225 825, 1245 1035, 1330 1035"/>
+  <text class="label" x="1168" y="1012">archive coverage + top elites</text>
+
+  <path class="line" d="M 1790 360 C 1830 360, 1840 380, 1880 380"/>
+  <path class="line" d="M 1790 700 C 1830 700, 1840 492, 1880 492"/>
+  <path class="line" d="M 1790 1035 C 1830 1035, 1840 555, 1880 555"/>
+  <path class="line-dash" d="M 1990 700 L 1990 620"/>
+
+  <path class="line-purple line" d="M 1880 590 C 1670 660, 1370 905, 1150 1105"/>
+  <text class="label" x="1592" y="770">JSON variants</text>
+
+  <path class="line-purple line" d="M 900 1030 L 900 960"/>
+  <text class="label" x="916" y="1000">validated offspring</text>
+
+  <path class="line-blue" d="M 650 1135 C 595 1135, 590 395, 650 395"/>
+  <text class="label" x="486" y="890">next evaluation</text>
+
+  <path class="line-dash" d="M 650 480 C 505 760, 445 910, 315 1040"/>
+  <text class="label" x="386" y="940">audit records</text>
+
+  <path class="line-dash" d="M 900 960 C 875 1200, 610 1210, 550 1210"/>
+  <path class="line-dash" d="M 1330 700 C 950 1060, 655 1180, 550 1180"/>
+  <path class="line-dash" d="M 1330 360 C 930 850, 675 1148, 550 1148"/>
+
+  <rect x="80" y="1468" width="2240" height="54" rx="10" fill="#e2e8f0" stroke="#cbd5e1"/>
+  <text class="small" x="110" y="1503">Legend: blue = evaluation path, green = archive/planning, amber = response-derived memory, purple = LLM perturbator. All target inputs and responses remain in events.jsonl.</text>
+</svg>
