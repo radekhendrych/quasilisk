@@ -69,11 +69,22 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 - `generation_traces.jsonl`: one record for each perturbator call, including the selected plan, defense profile, rendered request, raw response, and parsed variants.
 - `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
 - `parent_plan_outcomes.jsonl`: per-generation parent-plan outcome records used by outcome memory; this does not duplicate target responses from `events.jsonl`.
+- `search_stats.jsonl`: append-only perturbator-attempt lifecycle records linking selected parent cells and plans to validation, child-score, budget, and final archive outcomes.
+- `run_statistics.json`: live aggregate perturbator effectiveness by target, parent cell, strategy, route/case, and generation.
 - `affordances_<model>.json`: compact target-specific framing cues extracted from observed responses, such as preferred terms, visible reasoning cues, successful frames, failed frames, and refusal cues.
 - `archive_<model>.json`: best prompts per MAP-Elites feature cell.
 - `summary.md`: human-readable top prompts and response excerpts.
 - `run_summary.json`: machine-readable run summary.
 - `config.json`: run configuration.
+
+Perturbator statistics use a stable `perturbation_attempt_id` propagated through
+generation traces, perturbations, candidate metadata, and child evaluations.
+Archive effectiveness is credited from the final archive state after each
+generation, so parallel evaluation order and transient insertions do not inflate
+retention, new-cell, or cell-improvement rates.
+Primary perturbator rates exclude attempts that used local fallback variants;
+the corresponding `search_*` rates include fallbacks and describe end-to-end
+search effectiveness.
 
 Prompt text used for perturbator and judge requests lives in template files
 under `templates/` by default. Runs can override those paths through the

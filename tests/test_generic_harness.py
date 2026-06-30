@@ -32,6 +32,7 @@ from quasilisk_harness.perturbation.planner import select_plan
 from quasilisk_harness.perturbation.space import cases_for_objective, routes_for_objective
 from quasilisk_harness.perturbation.validator import validate_planned_prompt
 from quasilisk_harness.runner import build_arg_parser, main as generic_main, merge_config
+from quasilisk_harness.search_stats import SearchStatsTracker
 from quasilisk_harness.utils import extract_variants
 
 
@@ -50,6 +51,255 @@ class _FakeHTTPResponse:
 
 
 class GenericHarnessTests(unittest.TestCase):
+    def test_search_stats_attributes_final_archive_credit_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            tracker = SearchStatsTracker(
+                events_path=out_dir / "search_stats.jsonl",
+                summary_path=out_dir / "run_statistics.json",
+                objective_id="test_objective",
+                target_model="test/target",
+                perturbator_model="test/perturbator",
+                run_instance_id="test-run",
+            )
+            parent = {
+                "candidate_id": "parent",
+                "archive_cell": ["source", "cell"],
+                "score": {"total": 70},
+            }
+            candidates = [
+                Candidate(
+                    id="child-a",
+                    prompt="A sufficiently long generated evaluation prompt.",
+                    generation=1,
+                    source="planned_perturbator",
+                    island="test",
+                    parent_id="parent",
+                    metadata={"perturbation_attempt_id": "attempt-a"},
+                ),
+                Candidate(
+                    id="child-b",
+                    prompt="Another sufficiently long generated evaluation prompt.",
+                    generation=1,
+                    source="planned_perturbator",
+                    island="test",
+                    parent_id="parent",
+                    metadata={"perturbation_attempt_id": "attempt-b"},
+                ),
+            ]
+            for index, attempt_id in enumerate(("attempt-a", "attempt-b")):
+                tracker.start_attempt(
+                    attempt_id=attempt_id,
+                    generation=1,
+                    selection_index=index,
+                    selection_method="promising_weighted",
+                    parent_eval=parent,
+                )
+                tracker.record_perturbator_result(
+                    attempt_id=attempt_id,
+                    plan={
+                        "plan_id": f"plan-{index}",
+                        "strategy": "explore_coverage",
+                        "route": "route",
+                        "case_family": "case",
+                    },
+                    produced=1,
+                    accepted_candidates=[candidates[index]],
+                    rejected=[],
+                    audit={"usage": {"total_tokens": 100}},
+                    error=None,
+                )
+
+            evaluations = [
+                {
+                    "candidate_id": "child-a",
+                    "metadata": {"perturbation_attempt_id": "attempt-a"},
+                    "response": "response",
+                    "score": {"total": 80},
+                    "error": None,
+                },
+                {
+                    "candidate_id": "child-b",
+                    "metadata": {"perturbation_attempt_id": "attempt-b"},
+                    "response": "response",
+                    "score": {"total": 90},
+                    "error": None,
+                },
+            ]
+            completed = tracker.complete_generation(
+                generation=1,
+                scheduled_candidates=candidates,
+                evaluations=evaluations,
+                archive_before={},
+                archive_after={
+                    ("destination", "cell"): {
+                        "candidate_ids": ("child-b",),
+                        "best_candidate_id": "child-b",
+                        "best_score": 90,
+                    }
+                },
+            )
+
+            by_id = {item["attempt_id"]: item for item in completed}
+            self.assertEqual(
+                by_id["attempt-a"]["outcome"]["new_cells_created"],
+                0,
+            )
+            self.assertEqual(
+                by_id["attempt-b"]["outcome"]["new_cells_created"],
+                1,
+            )
+            self.assertEqual(
+                by_id["attempt-b"]["outcome"]["cell_best_score_gain"],
+                0,
+            )
+            summary = tracker.summary()
+            self.assertEqual(summary["overall"]["new_cells_created"], 1)
+            self.assertEqual(summary["overall"]["final_archive_retained"], 1)
+            self.assertEqual(summary["overall"]["archive_yield"], 0.5)
+            document = json.loads(
+                (out_dir / "run_statistics.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("test/target", document["targets"])
+            second_tracker = SearchStatsTracker(
+                events_path=out_dir / "search_stats.jsonl",
+                summary_path=out_dir / "run_statistics.json",
+                objective_id="test_objective",
+                target_model="test/second-target",
+                perturbator_model="test/perturbator",
+                run_instance_id="test-run-2",
+            )
+            second_tracker.write_summary()
+            document = json.loads(
+                (out_dir / "run_statistics.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                set(document["targets"]),
+                {"test/target", "test/second-target"},
+            )
+            self.assertEqual(
+                set(document["runs"]),
+                {"test-run", "test-run-2"},
+            )
+
+    def test_search_stats_records_budget_truncation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            tracker = SearchStatsTracker(
+                events_path=out_dir / "search_stats.jsonl",
+                summary_path=out_dir / "run_statistics.json",
+                objective_id="test_objective",
+                target_model="test/target",
+                perturbator_model="test/perturbator",
+                run_instance_id="test-run",
+            )
+            parent = {
+                "candidate_id": "parent",
+                "archive_cell": ["source"],
+                "score": {"total": 50},
+            }
+            candidates = [
+                Candidate(
+                    id=f"child-{index}",
+                    prompt=f"Generated evaluation prompt number {index} with enough detail.",
+                    generation=1,
+                    source="planned_perturbator",
+                    island="test",
+                    metadata={"perturbation_attempt_id": "attempt"},
+                )
+                for index in range(2)
+            ]
+            tracker.start_attempt(
+                attempt_id="attempt",
+                generation=1,
+                selection_index=0,
+                selection_method="ranked_fallback",
+                parent_eval=parent,
+            )
+            tracker.record_perturbator_result(
+                attempt_id="attempt",
+                plan={},
+                produced=2,
+                accepted_candidates=candidates,
+                rejected=[],
+                audit={},
+                error=None,
+            )
+            completed = tracker.complete_generation(
+                generation=1,
+                scheduled_candidates=candidates[:1],
+                evaluations=[],
+                archive_before={},
+                archive_after={},
+            )
+            self.assertEqual(completed[0]["outcome"]["budget_truncated"], 1)
+            self.assertEqual(completed[0]["outcome"]["scheduled"], 1)
+
+    def test_search_stats_does_not_credit_errored_archive_child(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            tracker = SearchStatsTracker(
+                events_path=out_dir / "search_stats.jsonl",
+                summary_path=out_dir / "run_statistics.json",
+                objective_id="test_objective",
+                target_model="test/target",
+                perturbator_model="test/perturbator",
+                run_instance_id="test-run",
+            )
+            parent = {
+                "candidate_id": "parent",
+                "archive_cell": ["source"],
+                "score": {"total": 50},
+            }
+            candidate = Candidate(
+                id="errored-child",
+                prompt="Generated evaluation prompt with enough detail for testing.",
+                generation=1,
+                source="planned_perturbator",
+                island="test",
+                metadata={"perturbation_attempt_id": "attempt"},
+            )
+            tracker.start_attempt(
+                attempt_id="attempt",
+                generation=1,
+                selection_index=0,
+                selection_method="ranked_fallback",
+                parent_eval=parent,
+            )
+            tracker.record_perturbator_result(
+                attempt_id="attempt",
+                plan={},
+                produced=1,
+                accepted_candidates=[candidate],
+                rejected=[],
+                audit={},
+                error=None,
+            )
+            completed = tracker.complete_generation(
+                generation=1,
+                scheduled_candidates=[candidate],
+                evaluations=[
+                    {
+                        "candidate_id": "errored-child",
+                        "metadata": {"perturbation_attempt_id": "attempt"},
+                        "response": "",
+                        "score": {"total": 0},
+                        "error": "transport failure",
+                    }
+                ],
+                archive_before={},
+                archive_after={
+                    ("destination",): {
+                        "candidate_ids": ("errored-child",),
+                        "best_candidate_id": "errored-child",
+                        "best_score": 0,
+                    }
+                },
+            )
+            outcome = completed[0]["outcome"]
+            self.assertEqual(outcome["final_archive_retained"], 0)
+            self.assertEqual(outcome["new_cells_created"], 0)
+
     def test_merge_config_preserves_file_token_limits_without_cli_override(self):
         parser = build_arg_parser()
         args = parser.parse_args([])
@@ -2064,11 +2314,32 @@ class GenericHarnessTests(unittest.TestCase):
             self.assertTrue((out_dir / "affordances_dryrun_target.json").exists())
             self.assertTrue((out_dir / "run_summary.json").exists())
             self.assertTrue((out_dir / "summary.md").exists())
+            self.assertTrue((out_dir / "search_stats.jsonl").exists())
+            self.assertTrue((out_dir / "run_statistics.json").exists())
             status = json.loads((out_dir / "status.json").read_text())
             self.assertEqual(status["phase"], "completed_target")
             perturbation = json.loads((out_dir / "perturbations.jsonl").read_text().splitlines()[0])
             self.assertIn("template_audit", perturbation["audit"])
             self.assertIn("perturbator_planned_system", str(perturbation["audit"]["template_audit"]))
+            attempt_id = perturbation["perturbation_attempt_id"]
+            self.assertTrue(attempt_id)
+            events = [
+                json.loads(line)
+                for line in (out_dir / "events.jsonl").read_text().splitlines()
+            ]
+            planned = [
+                item
+                for item in events
+                if item.get("metadata", {}).get("perturbation_attempt_id")
+                == attempt_id
+            ]
+            self.assertTrue(planned)
+            self.assertIn("archive_update", planned[0])
+            statistics = json.loads(
+                (out_dir / "run_statistics.json").read_text(encoding="utf-8")
+            )
+            target_statistics = statistics["targets"]["dryrun/target"]
+            self.assertGreater(target_statistics["attempts_completed"], 0)
             self.assertTrue((out_dir / "generation_traces.jsonl").exists())
             self.assertTrue((out_dir / "defense_profiles_dryrun_target.jsonl").exists())
 

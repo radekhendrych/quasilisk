@@ -28,6 +28,7 @@ from .perturbation.space import (
     route_descriptions_for_objective,
 )
 from .perturbation.validator import validate_planned_prompt
+from .search_stats import SearchStatsTracker
 from .templates import render_template_file
 from .utils import (
     MAX_PROMPT_CHARS,
@@ -146,30 +147,72 @@ class Candidate:
     metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
+@dataclasses.dataclass(frozen=True)
+class ArchiveUpdate:
+    destination_cell: tuple[str, ...]
+    retained: bool
+    new_cell: bool
+    replaced_same_prompt: bool
+    evicted_candidate_id: str | None
+    cell_best_before: float
+    cell_best_after: float
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return {
+            "destination_cell": list(self.destination_cell),
+            "retained": self.retained,
+            "new_cell": self.new_cell,
+            "replaced_same_prompt": self.replaced_same_prompt,
+            "evicted_candidate_id": self.evicted_candidate_id,
+            "cell_best_before": round(self.cell_best_before, 3),
+            "cell_best_after": round(self.cell_best_after, 3),
+        }
+
+
 class MapElitesArchive:
     def __init__(self, capacity_per_cell: int, feature_keys: list[str]) -> None:
         self.capacity_per_cell = capacity_per_cell
         self.feature_keys = feature_keys
         self.cells: dict[tuple[str, ...], list[dict[str, Any]]] = {}
 
-    def add(self, evaluation: dict[str, Any]) -> bool:
+    def add(self, evaluation: dict[str, Any]) -> ArchiveUpdate:
         key = tuple(evaluation["features"].get(name, "unknown") for name in self.feature_keys)
+        new_cell = key not in self.cells
         cell = self.cells.setdefault(key, [])
+        before_ids = {str(item.get("candidate_id", "")) for item in cell}
+        cell_best_before = max(
+            (_score_float(item.get("score", {}), "total") for item in cell),
+            default=0.0,
+        )
         prompt_hash = evaluation["prompt_hash"]
-        replaced = False
+        replaced_same_prompt = False
         for index, existing in enumerate(cell):
             if existing["prompt_hash"] == prompt_hash:
                 if evaluation["score"]["total"] > existing["score"]["total"]:
                     cell[index] = evaluation
-                    replaced = True
+                    replaced_same_prompt = True
                 break
         else:
             cell.append(evaluation)
-            replaced = True
 
         cell.sort(key=lambda item: item["score"]["total"], reverse=True)
         del cell[self.capacity_per_cell :]
-        return replaced
+        candidate_id = str(evaluation.get("candidate_id", ""))
+        after_ids = {str(item.get("candidate_id", "")) for item in cell}
+        evicted_ids = before_ids - after_ids
+        cell_best_after = max(
+            (_score_float(item.get("score", {}), "total") for item in cell),
+            default=0.0,
+        )
+        return ArchiveUpdate(
+            destination_cell=key,
+            retained=candidate_id in after_ids,
+            new_cell=new_cell,
+            replaced_same_prompt=replaced_same_prompt,
+            evicted_candidate_id=next(iter(sorted(evicted_ids)), None),
+            cell_best_before=cell_best_before,
+            cell_best_after=cell_best_after,
+        )
 
     def elites(self) -> list[dict[str, Any]]:
         return [evaluation for cell in self.cells.values() for evaluation in cell]
@@ -180,6 +223,26 @@ class MapElitesArchive:
             return []
         weights = [max(1.0, evaluation["score"]["total"] + 1.0) for evaluation in elites]
         return [rng.choices(elites, weights=weights, k=1)[0] for _ in range(min(count, len(elites)))]
+
+    def snapshot(self) -> dict[tuple[str, ...], dict[str, Any]]:
+        return {
+            key: {
+                "candidate_ids": tuple(
+                    str(item.get("candidate_id", "")) for item in evaluations
+                ),
+                "best_candidate_id": (
+                    str(evaluations[0].get("candidate_id", ""))
+                    if evaluations
+                    else None
+                ),
+                "best_score": (
+                    _score_float(evaluations[0].get("score", {}), "total")
+                    if evaluations
+                    else 0.0
+                ),
+            }
+            for key, evaluations in self.cells.items()
+        }
 
     def to_jsonable(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -894,6 +957,7 @@ def query_planned_perturbator(
     template_config: dict[str, Any] | None = None,
     outcome_memory: ParentPlanOutcomeMemory | None = None,
     generation: int = 0,
+    attempt_id: str = "",
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
     archive_context = sorted(
         archive.elites(), key=lambda item: item["score"]["total"], reverse=True
@@ -926,6 +990,7 @@ def query_planned_perturbator(
         "template_audit": template_audit,
         "perturbation_plan": plan_json,
         "defense_profile": defense_json,
+        "perturbation_attempt_id": attempt_id,
         "outcome_memory": (
             outcome_memory.to_jsonable(generation=generation)
             if outcome_memory is not None
@@ -963,6 +1028,11 @@ def query_planned_perturbator(
             **variant,
             "perturbation_plan": plan_json,
             "defense_profile": defense_json,
+            **(
+                {"perturbation_attempt_id": attempt_id}
+                if attempt_id
+                else {}
+            ),
         }
         for variant in variants
     ]
@@ -1067,6 +1137,7 @@ def prepare_candidates(
             for key in (
                 "perturbation_plan",
                 "defense_profile",
+                "perturbation_attempt_id",
             )
             if key in variant
         }
@@ -1310,7 +1381,8 @@ def evaluate_and_record(
             state["judge_retry_count"] = int(state.get("judge_retry_count", 0)) + int(
                 judge_audit.get("retry_count", 0) or 0
             )
-        archive.add(evaluation)
+        archive_update = archive.add(evaluation)
+        evaluation["archive_update"] = archive_update.to_jsonable()
         affordances.update(evaluation)
         state["best_score"] = max(state["best_score"], evaluation["score"]["total"])
         state["last_event"] = {
@@ -1401,6 +1473,8 @@ def run_for_target(
     perturbations_path = out_dir / "perturbations.jsonl"
     generation_traces_path = out_dir / "generation_traces.jsonl"
     parent_plan_outcomes_path = out_dir / "parent_plan_outcomes.jsonl"
+    search_stats_path = out_dir / "search_stats.jsonl"
+    run_statistics_path = out_dir / "run_statistics.json"
     affordances_path = out_dir / f"affordances_{safe_slug(target_model)}.json"
     defense_profiles_path = out_dir / f"defense_profiles_{safe_slug(target_model)}.jsonl"
     feature_keys = objective.MANIFEST["feature_keys"]
@@ -1422,6 +1496,19 @@ def run_for_target(
             ),
         )
     archive = MapElitesArchive(config["archive_per_cell"], feature_keys)
+    target_run_instance_id = short_hash(
+        f"{objective.OBJECTIVE_ID}|{target_model}|{utc_now()}",
+        16,
+    )
+    search_stats = SearchStatsTracker(
+        events_path=search_stats_path,
+        summary_path=run_statistics_path,
+        objective_id=objective.OBJECTIVE_ID,
+        target_model=target_model,
+        perturbator_model=perturbator_model,
+        run_instance_id=target_run_instance_id,
+    )
+    search_stats.write_summary()
     affordances = TargetAffordanceTracker(
         target_model=target_model,
         objective_id=objective.OBJECTIVE_ID,
@@ -1435,6 +1522,7 @@ def run_for_target(
         "objective_id": objective.OBJECTIVE_ID,
         "target_model": target_model,
         "perturbator_model": perturbator_model,
+        "target_run_instance_id": target_run_instance_id,
         "evaluations": 0,
         "max_evaluations": config["max_evaluations"],
         "generation": 0,
@@ -1453,6 +1541,12 @@ def run_for_target(
         "parent_plan_memory_active": 0,
         "parent_plan_memory_outcomes": 0,
         "parent_plan_memory_regressions": 0,
+        "search_attempts_started": 0,
+        "search_attempts_completed": 0,
+        "perturbator_validity_rate": 0.0,
+        "perturbator_improvement_rate": 0.0,
+        "perturbator_archive_yield": 0.0,
+        "perturbator_new_cell_yield": 0.0,
     }
     write_status(out_dir, state)
 
@@ -1507,12 +1601,33 @@ def run_for_target(
             )
         write_status(out_dir, state)
         parents = select_planned_parents(archive, config["parents_per_iteration"], rng)
+        selection_method = (
+            "promising_weighted"
+            if any(_planned_parent_is_promising(item) for item in archive.elites())
+            else "ranked_fallback"
+        )
         if not parents:
             parents = seed_evals[: config["parents_per_iteration"]]
+            selection_method = "seed_fallback"
 
         generation_candidates: list[Candidate] = []
         parent_scores: dict[str, float] = {}
-        for parent_eval in parents:
+        for selection_index, parent_eval in enumerate(parents):
+            attempt_id = short_hash(
+                (
+                    f"{objective.OBJECTIVE_ID}|{target_model}|{generation}|"
+                    f"{selection_index}|{parent_eval['candidate_id']}|"
+                    f"{target_run_instance_id}"
+                ),
+                16,
+            )
+            search_stats.start_attempt(
+                attempt_id=attempt_id,
+                generation=generation,
+                selection_index=selection_index,
+                selection_method=selection_method,
+                parent_eval=parent_eval,
+            )
             parent_scores[parent_eval["candidate_id"]] = _score_float(
                 parent_eval.get("score", {}),
                 "total",
@@ -1535,6 +1650,7 @@ def run_for_target(
                 template_config=template_config,
                 outcome_memory=outcome_memory,
                 generation=generation,
+                attempt_id=attempt_id,
             )
             append_jsonl(
                 generation_traces_path,
@@ -1544,6 +1660,7 @@ def run_for_target(
                     "target_model": target_model,
                     "perturbator_model": perturbator_model,
                     "parent_candidate_id": parent_eval["candidate_id"],
+                    "perturbation_attempt_id": attempt_id,
                     "generation": generation,
                     "trace_type": "planned_perturbator",
                     "audit": perturbator_audit,
@@ -1556,6 +1673,7 @@ def run_for_target(
                     "objective_id": objective.OBJECTIVE_ID,
                     "target_model": target_model,
                     "parent_candidate_id": parent_eval["candidate_id"],
+                    "perturbation_attempt_id": attempt_id,
                     "generation": generation,
                     "defense_profile": perturbator_audit.get("defense_profile"),
                 },
@@ -1575,6 +1693,15 @@ def run_for_target(
                 seen_prompts=seen_prompts,
             )
             generation_candidates.extend(candidates)
+            search_stats.record_perturbator_result(
+                attempt_id=attempt_id,
+                plan=perturbator_audit.get("perturbation_plan"),
+                produced=len(variants),
+                accepted_candidates=candidates,
+                rejected=rejected,
+                audit=perturbator_audit,
+                error=error,
+            )
             append_jsonl(
                 perturbations_path,
                 {
@@ -1583,6 +1710,7 @@ def run_for_target(
                     "target_model": target_model,
                     "perturbator_model": perturbator_model,
                     "parent_candidate_id": parent_eval["candidate_id"],
+                    "perturbation_attempt_id": attempt_id,
                     "generation": generation,
                     "perturbation_plan": perturbator_audit.get("perturbation_plan"),
                     "defense_profile": perturbator_audit.get("defense_profile"),
@@ -1599,32 +1727,41 @@ def run_for_target(
             remaining_budget = max(0, config["max_evaluations"] - state["evaluations"])
         if remaining_budget is not None:
             generation_candidates = generation_candidates[:remaining_budget]
-        if not generation_candidates:
-            continue
-
-        state["phase"] = "evaluating_generation"
-        state["generation_candidate_count"] = len(generation_candidates)
-        write_status(out_dir, state)
-        generation_evals = evaluate_and_record(
-            client=client,
-            objective=objective,
-            candidates=generation_candidates,
-            target_model=target_model,
-            target_temperature=config["target_temperature"],
-            target_max_tokens=config["target_max_tokens"],
-            target_system_prompt=config.get("target_system_prompt") or None,
-            judge_model=config.get("judge_model"),
-            judge_temperature=config["judge_temperature"],
-            judge_max_tokens=config["judge_max_tokens"],
-            objective_config=config.get("objective_config", {}),
-            template_config=template_config,
-            parallelism=config["parallelism"],
-            archive=archive,
-            affordances=affordances,
-            affordances_path=affordances_path,
-            events_path=events_path,
-            state=state,
+        scheduled_candidates = list(generation_candidates)
+        archive_before_generation = archive.snapshot()
+        generation_evals: list[dict[str, Any]] = []
+        if generation_candidates:
+            state["phase"] = "evaluating_generation"
+            state["generation_candidate_count"] = len(generation_candidates)
+            write_status(out_dir, state)
+            generation_evals = evaluate_and_record(
+                client=client,
+                objective=objective,
+                candidates=generation_candidates,
+                target_model=target_model,
+                target_temperature=config["target_temperature"],
+                target_max_tokens=config["target_max_tokens"],
+                target_system_prompt=config.get("target_system_prompt") or None,
+                judge_model=config.get("judge_model"),
+                judge_temperature=config["judge_temperature"],
+                judge_max_tokens=config["judge_max_tokens"],
+                objective_config=config.get("objective_config", {}),
+                template_config=template_config,
+                parallelism=config["parallelism"],
+                archive=archive,
+                affordances=affordances,
+                affordances_path=affordances_path,
+                events_path=events_path,
+                state=state,
+            )
+        search_stats.complete_generation(
+            generation=generation,
+            scheduled_candidates=scheduled_candidates,
+            evaluations=generation_evals,
+            archive_before=archive_before_generation,
+            archive_after=archive.snapshot(),
         )
+        state.update(search_stats.status_metrics())
         if outcome_memory is not None:
             outcome_records = outcome_memory.record_generation_outcomes(
                 generation=generation,
@@ -1688,6 +1825,7 @@ def run_for_target(
         (_score_float(item.get("score", {}), "total") for item in all_evals),
         default=0.0,
     )
+    search_statistics = search_stats.summary()
     summary = {
         "objective_id": objective.OBJECTIVE_ID,
         "target_model": target_model,
@@ -1699,6 +1837,10 @@ def run_for_target(
         "saved_seed_info": saved_seed_info,
         "archive_path": str(archive_path),
         "affordances_path": str(affordances_path),
+        "run_statistics_path": str(run_statistics_path),
+        "search_metrics": search_statistics["overall"],
+        "search_top_parent_cells": search_statistics["top_parent_cells"],
+        "search_bottom_parent_cells": search_statistics["bottom_parent_cells"],
         "execution_metrics": {
             "completion_state": "completed",
             "target_error_count": int(state.get("target_error_count", 0)),
@@ -1719,6 +1861,12 @@ def run_for_target(
             "parent_plan_memory_regressions": int(
                 state.get("parent_plan_memory_regressions", 0)
             ),
+            "search_attempts_started": int(
+                state.get("search_attempts_started", 0)
+            ),
+            "search_attempts_completed": int(
+                state.get("search_attempts_completed", 0)
+            ),
         },
         "objective_metrics": objective_metrics,
         "top": top,
@@ -1728,7 +1876,9 @@ def run_for_target(
     state["best_score"] = round(best_score, 2)
     state["total_target_calls"] = summary["total_target_calls"]
     state["archive_path"] = str(archive_path)
+    state["run_statistics_path"] = str(run_statistics_path)
     state["completed_at"] = utc_now()
+    search_stats.write_summary()
     write_status(out_dir, state)
     return summary
 
@@ -1771,6 +1921,7 @@ def write_summary(
                 f"({summary['seed_info']['seed_file']})",
                 f"- Archive: `{summary['archive_path']}`",
                 f"- Affordances: `{summary['affordances_path']}`",
+                f"- Run statistics: `{summary.get('run_statistics_path', '')}`",
             ]
         )
         if summary.get("error"):
@@ -1794,6 +1945,37 @@ def write_summary(
             lines.append("".join(seed_parts))
         for name, value in summary.get("objective_metrics", {}).items():
             lines.append(f"- {name}: `{value}`")
+        search_metrics = summary.get("search_metrics") or {}
+        for name in (
+            "validity_rate",
+            "evaluation_yield",
+            "improvement_rate",
+            "archive_yield",
+            "new_cell_yield",
+            "mean_score_delta",
+            "best_score_delta",
+            "positive_gain_per_target_call",
+        ):
+            if name in search_metrics:
+                lines.append(f"- perturbator_{name}: `{search_metrics[name]}`")
+        top_cells = summary.get("search_top_parent_cells") or []
+        bottom_cells = summary.get("search_bottom_parent_cells") or []
+        if top_cells:
+            lines.append(
+                "- Top parent cells: "
+                + ", ".join(
+                    f"`{item['cell']}` ({item['positive_gain_per_target_call']}/call)"
+                    for item in top_cells
+                )
+            )
+        if bottom_cells:
+            lines.append(
+                "- Bottom parent cells: "
+                + ", ".join(
+                    f"`{item['cell']}` ({item['mean_best_score_delta']} mean best delta)"
+                    for item in bottom_cells
+                )
+            )
         lines.append("")
         for index, item in enumerate(summary.get("top", []), start=1):
             score = _score_float(item.get("score", {}), "total")

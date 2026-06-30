@@ -339,6 +339,8 @@ def list_objectives() -> None:
 
 RUN_ARTIFACT_NAMES = {
     "events.jsonl",
+    "search_stats.jsonl",
+    "run_statistics.json",
     "run_summary.json",
     "status.json",
     "summary.md",
@@ -389,6 +391,10 @@ def _failed_target_summary(
         "saved_seed_info": None,
         "archive_path": str(out_dir / f"archive_{safe_slug(target_model)}.json"),
         "affordances_path": str(out_dir / f"affordances_{safe_slug(target_model)}.json"),
+        "run_statistics_path": str(out_dir / "run_statistics.json"),
+        "search_metrics": {},
+        "search_top_parent_cells": [],
+        "search_bottom_parent_cells": [],
         "execution_metrics": {
             "completion_state": "failed",
             "target_error_count": 0,

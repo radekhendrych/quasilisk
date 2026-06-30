@@ -80,9 +80,28 @@ class ScoringTests(unittest.TestCase):
         }
         low = dict(base, score={"total": 10})
         high = dict(base, candidate_id="b", score={"total": 90})
-        archive.add(low)
-        archive.add(high)
+        low_update = archive.add(low)
+        rejected_update = archive.add(
+            dict(
+                base,
+                prompt_hash="different",
+                candidate_id="rejected",
+                score={"total": 5},
+            )
+        )
+        high_update = archive.add(high)
         elites = archive.elites()
+        self.assertTrue(low_update.new_cell)
+        self.assertTrue(low_update.retained)
+        self.assertFalse(rejected_update.retained)
+        self.assertIsNone(rejected_update.evicted_candidate_id)
+        self.assertEqual(rejected_update.cell_best_before, 10)
+        self.assertEqual(rejected_update.cell_best_after, 10)
+        self.assertTrue(high_update.replaced_same_prompt)
+        self.assertTrue(high_update.retained)
+        self.assertEqual(high_update.evicted_candidate_id, "a")
+        self.assertEqual(high_update.cell_best_before, 10)
+        self.assertEqual(high_update.cell_best_after, 90)
         self.assertEqual(len(elites), 1)
         self.assertEqual(elites[0]["candidate_id"], "b")
 
