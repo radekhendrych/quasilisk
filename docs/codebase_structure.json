@@ -73,9 +73,10 @@
       "path": "quasilisk_harness/",
       "label": "Generic Harness Package",
       "contains": [
-        "module.quasilisk_harness.runner",
-        "module.quasilisk_harness.core",
-        "module.quasilisk_harness.clients",
+                "module.quasilisk_harness.runner",
+                "module.quasilisk_harness.core",
+                "module.quasilisk_harness.judging",
+                "module.quasilisk_harness.clients",
         "module.quasilisk_harness.utils",
         "dir.quasilisk_harness.objectives"
       ]
@@ -103,8 +104,9 @@
         "config.dryrun_censorship",
         "config.dryrun_self_harm",
         "config.dryrun_nihilism",
-        "config.dryrun_relativism",
-        "config.dryrun_fatalism"
+                "config.dryrun_relativism",
+                "config.dryrun_fatalism",
+                "config.dryrun_fatalism_panel"
       ]
     },
     {
@@ -185,6 +187,22 @@
       ]
     },
     {
+      "id": "module.quasilisk_harness.judging",
+      "path": "quasilisk_harness/judging.py",
+      "label": "Judge Panel Helpers",
+      "responsibilities": [
+        "Calculate judge-panel quorum and scalar-median diagnostics.",
+        "Aggregate panel usage.",
+        "Require quorum member support for threshold decisions."
+      ],
+      "important_functions": [
+        "judge_quorum",
+        "panel_score_summary",
+        "aggregate_usage",
+        "panel_supports"
+      ]
+    },
+    {
       "id": "module.quasilisk_harness.clients",
       "path": "quasilisk_harness/clients.py",
       "label": "Model Clients",
@@ -231,9 +249,10 @@
         "local_variants",
         "summarize_model"
       ],
-      "judge_hooks_for_llm_judge_objectives": [
-        "build_judge_messages",
-        "parse_judge_response"
+            "judge_hooks_for_llm_judge_objectives": [
+                "build_judge_messages",
+                "parse_judge_response",
+                "aggregate_judge_scores when multiple judges are configured"
       ]
     },
     {
@@ -256,7 +275,7 @@
         "Shared feature classification for moral-susceptibility objectives.",
         "Anchor validation.",
         "Commitment-oriented risk scoring for own-voice endorsement versus balancing/resistance and distancing.",
-        "Shared LLM judge prompt construction and judge response parsing with separate argument-success and commitment-evidence scores.",
+        "Shared LLM judge prompt construction, response parsing, and finalized-score panel aggregation with separate argument-success and commitment-evidence diagnostics.",
         "Shared model summary metrics."
       ]
     }
@@ -397,7 +416,7 @@
         "seed candidates",
         "target model",
         "client",
-        "judge model when objective scoring_method is llm_judge"
+        "one to three judge models when objective scoring_method is llm_judge"
       ],
       "outputs": [
         "events.jsonl records",
@@ -461,8 +480,8 @@
       "inputs": [
         "accepted candidates",
         "target model",
-        "judge model when objective scoring_method is llm_judge",
-        "parallelism setting"
+        "one to three judge models when objective scoring_method is llm_judge",
+        "target and judge parallelism settings"
       ],
       "outputs": [
         "events.jsonl records",
@@ -734,9 +753,10 @@
       {
         "group": "Generic Harness",
         "nodes": [
-          "module.quasilisk_harness.runner",
-          "module.quasilisk_harness.core",
-          "module.quasilisk_harness.clients",
+                    "module.quasilisk_harness.runner",
+                    "module.quasilisk_harness.core",
+                    "module.quasilisk_harness.judging",
+                    "module.quasilisk_harness.clients",
           "module.quasilisk_harness.utils"
         ]
       },
@@ -768,7 +788,7 @@
     ],
     "important_annotations": [
       "events.jsonl is the source of truth for target prompts and responses.",
-      "For llm_judge objectives, events.jsonl also records judge request messages, raw judge responses, argument_success_score, commitment_evidence_score, and judge signals.",
+            "For llm_judge objectives, events.jsonl also records judge request messages, raw judge responses, parsed member scores, quorum and aggregation details, usage, and judge signals.",
       "affordances_<model>.json records target-specific framing and visible-reasoning cues used by later perturbator calls.",
       "Model-specific seed files record learned or curated target-specific prompts that are reused before default seeds on later runs.",
       "perturbations.jsonl records perturbator request messages and raw responses.",
@@ -782,6 +802,7 @@
     "python3 quasilisk.py --config configs/dryrun_censorship.json",
     "python3 quasilisk.py --config configs/dryrun_relativism.json",
     "python3 quasilisk.py --config configs/dryrun_nihilism.json",
-    "python3 quasilisk.py --config configs/dryrun_fatalism.json"
+        "python3 quasilisk.py --config configs/dryrun_fatalism.json",
+        "python3 quasilisk.py --config configs/dryrun_fatalism_panel.json"
   ]
 }

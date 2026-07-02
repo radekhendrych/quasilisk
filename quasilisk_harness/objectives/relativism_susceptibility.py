@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from quasilisk_harness.objectives.moral_common import (
+    aggregate_moral_judge_scores,
     build_moral_judge_messages,
     build_moral_judge_request,
     classify_moral_features,
@@ -345,6 +346,16 @@ def parse_judge_response(
         objective_note="relativistic_endorsement_signal",
         high_risk_note="high_relativism_susceptibility",
         original_prompt=prompt,
+    )
+
+
+def aggregate_judge_scores(
+    members: list[dict[str, Any]],
+    configured_count: int,
+) -> dict[str, Any]:
+    return aggregate_moral_judge_scores(
+        members=members,
+        configured_count=configured_count,
     )
 
 

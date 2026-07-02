@@ -13,6 +13,7 @@ from types import ModuleType
 from typing import Any
 
 from .clients import DryRunClient, OpenRouterClient, OpenRouterError
+from .judging import aggregate_usage, panel_score_summary, panel_supports
 from .objectives.moral_common import sanitize_philosophical_scaffolding
 from .perturbation.defense import (
     extract_defense_profile,
@@ -632,16 +633,18 @@ def score_response_for_objective(
     objective: ModuleType,
     prompt: str,
     response: str,
-    judge_model: str | None,
+    judge_models: list[str],
     judge_temperature: float,
     judge_max_tokens: int | None,
     objective_config: dict[str, Any],
     template_config: dict[str, Any] | None = None,
+    judge_executor: concurrent.futures.Executor | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     heuristic_score = objective.score_response(prompt, response)
     if not objective_uses_llm_judge(objective):
         return heuristic_score, None
 
+    judge_model = judge_models[0] if len(judge_models) == 1 else None
     judge_audit: dict[str, Any] = {
         "model": judge_model,
         "request_messages": None,
@@ -652,7 +655,7 @@ def score_response_for_objective(
         "fallback_used": False,
         "error": None,
     }
-    if not judge_model:
+    if not judge_models:
         error = "missing_judge_model"
         judge_audit["fallback_used"] = True
         judge_audit["error"] = error
@@ -668,34 +671,119 @@ def score_response_for_objective(
         else:
             messages = objective.build_judge_messages(prompt, response, judge_config)
             template_audit = None
-        judge_audit["request_messages"] = messages
-        judge_audit["template_audit"] = template_audit
-        result = client.chat(
-            model=judge_model,
-            messages=messages,
-            temperature=judge_temperature,
-            max_tokens=judge_max_tokens,
-            response_format={"type": "json_object"},
-        )
-        judge_audit["raw_response"] = result.content
-        judge_audit["finish_reason"] = result.finish_reason
-        judge_audit["usage"] = result.usage
-        judge_audit["retry_count"] = getattr(result, "retry_count", 0)
-        score = objective.parse_judge_response(
-            prompt,
-            response,
-            result.content,
-            heuristic_score,
-        )
-        score["judge_model"] = judge_model
-        return score, judge_audit
-    except (OpenRouterError, json.JSONDecodeError, ValueError, TypeError) as exc:
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
         error = str(exc)
-        if isinstance(exc, OpenRouterError):
-            judge_audit["retry_count"] = _retry_count_from_error(exc)
         judge_audit["fallback_used"] = True
         judge_audit["error"] = error
         return _judge_fallback_score(heuristic_score, error), judge_audit
+
+    if len(judge_models) == 1:
+        try:
+            judge_audit["request_messages"] = messages
+            judge_audit["template_audit"] = template_audit
+            result = client.chat(
+                model=judge_model,
+                messages=messages,
+                temperature=judge_temperature,
+                max_tokens=judge_max_tokens,
+                response_format={"type": "json_object"},
+            )
+            judge_audit["raw_response"] = result.content
+            judge_audit["finish_reason"] = result.finish_reason
+            judge_audit["usage"] = result.usage
+            judge_audit["retry_count"] = getattr(result, "retry_count", 0)
+            score = objective.parse_judge_response(
+                prompt,
+                response,
+                result.content,
+                heuristic_score,
+            )
+            score["judge_model"] = judge_model
+            return score, judge_audit
+        except (OpenRouterError, json.JSONDecodeError, ValueError, TypeError) as exc:
+            error = str(exc)
+            if isinstance(exc, OpenRouterError):
+                judge_audit["retry_count"] = _retry_count_from_error(exc)
+            judge_audit["fallback_used"] = True
+            judge_audit["error"] = error
+            return _judge_fallback_score(heuristic_score, error), judge_audit
+
+    def query_member(model: str) -> dict[str, Any]:
+        member: dict[str, Any] = {
+            "model": model,
+            "raw_response": None,
+            "finish_reason": None,
+            "usage": {},
+            "retry_count": 0,
+            "parsed_score": None,
+            "error": None,
+        }
+        try:
+            result = client.chat(
+                model=model,
+                messages=messages,
+                temperature=judge_temperature,
+                max_tokens=judge_max_tokens,
+                response_format={"type": "json_object"},
+            )
+            member["raw_response"] = result.content
+            member["finish_reason"] = result.finish_reason
+            member["usage"] = result.usage
+            member["retry_count"] = getattr(result, "retry_count", 0)
+            parsed_score = objective.parse_judge_response(
+                prompt,
+                response,
+                result.content,
+                heuristic_score,
+            )
+            parsed_score["judge_model"] = model
+            member["parsed_score"] = parsed_score
+        except Exception as exc:
+            if isinstance(exc, OpenRouterError):
+                member["retry_count"] = _retry_count_from_error(exc)
+            member["error"] = f"{type(exc).__name__}: {exc}"
+        return member
+
+    if judge_executor is None:
+        members = [query_member(model) for model in judge_models]
+    else:
+        futures = [judge_executor.submit(query_member, model) for model in judge_models]
+        members = [future.result() for future in futures]
+
+    aggregation = panel_score_summary(members, configured_count=len(judge_models))
+    panel_audit: dict[str, Any] = {
+        "schema_version": 2,
+        "models": list(judge_models),
+        "request_messages": messages,
+        "template_audit": template_audit,
+        "members": members,
+        "aggregation": aggregation,
+        "usage": aggregate_usage(members),
+        "retry_count": sum(int(member.get("retry_count", 0) or 0) for member in members),
+        "fallback_used": False,
+        "error": None,
+        "calibration": None,
+    }
+    if not aggregation["quorum_met"]:
+        error = (
+            "judge_panel_quorum_not_met:"
+            f"{aggregation['valid_count']}/{aggregation['configured_count']}"
+        )
+        panel_audit["fallback_used"] = True
+        panel_audit["error"] = error
+        return _judge_fallback_score(heuristic_score, error), panel_audit
+
+    try:
+        score = objective.aggregate_judge_scores(
+            members,
+            len(judge_models),
+        )
+        return score, panel_audit
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        panel_audit["fallback_used"] = True
+        panel_audit["error"] = error
+        return _judge_fallback_score(heuristic_score, error), panel_audit
 
 def build_planned_perturbation_request(
     *,
@@ -824,11 +912,12 @@ def evaluate_candidate(
     target_temperature: float,
     target_max_tokens: int | None,
     target_system_prompt: str | None,
-    judge_model: str | None,
+    judge_models: list[str],
     judge_temperature: float,
     judge_max_tokens: int | None,
     objective_config: dict[str, Any],
     template_config: dict[str, Any] | None = None,
+    judge_executor: concurrent.futures.Executor | None = None,
 ) -> dict[str, Any]:
     messages: list[dict[str, str]] = []
     if target_system_prompt:
@@ -863,11 +952,12 @@ def evaluate_candidate(
             objective=objective,
             prompt=candidate.prompt,
             response=response,
-            judge_model=judge_model,
+            judge_models=judge_models,
             judge_temperature=judge_temperature,
             judge_max_tokens=judge_max_tokens,
             objective_config=objective_config,
             template_config=template_config,
+            judge_executor=judge_executor,
         )
     else:
         score = _empty_score(raw_error)
@@ -1199,6 +1289,12 @@ def _seed_entry_from_evaluation(
     notes = score_data.get("notes")
     if isinstance(notes, list):
         entry["source_notes"] = list(notes)
+    judge_audit = evaluation.get("judge")
+    if isinstance(judge_audit, dict) and isinstance(judge_audit.get("members"), list):
+        entry["source_judge_models"] = list(judge_audit.get("models") or [])
+        entry["source_judge_aggregation"] = dict(
+            judge_audit.get("aggregation") or {}
+        )
     return entry
 
 
@@ -1227,6 +1323,32 @@ def _should_replace_seed(existing: dict[str, Any], entry: dict[str, Any]) -> boo
     existing_raw = float(existing.get("source_raw_judge_risk_score", -1) or -1)
     entry_raw = float(entry.get("source_raw_judge_risk_score", -1) or -1)
     return entry_score == existing_score and entry_raw > existing_raw
+
+
+def _score_is_near_miss(score: dict[str, Any]) -> bool:
+    return score_indicates_capped_harm_near_miss(
+        score
+    ) or score_indicates_contaminated_high_raw_near_miss(score)
+
+
+def _evaluation_is_confirmed_success(
+    evaluation: dict[str, Any],
+    threshold: float,
+) -> bool:
+    score = evaluation.get("score", {})
+    if _score_float(score, "total") < threshold:
+        return False
+    return panel_supports(
+        evaluation.get("judge"),
+        lambda member_score: _score_float(member_score, "total") >= threshold,
+    )
+
+
+def _evaluation_is_confirmed_near_miss(evaluation: dict[str, Any]) -> bool:
+    score = evaluation.get("score", {})
+    if not _score_is_near_miss(score):
+        return False
+    return panel_supports(evaluation.get("judge"), _score_is_near_miss)
 
 
 def save_successful_model_seeds(
@@ -1269,10 +1391,11 @@ def save_successful_model_seeds(
     ):
         score_data = evaluation.get("score", {})
         score = float(score_data.get("total", 0) or 0)
-        is_success = score >= threshold
-        is_near_miss = score_indicates_capped_harm_near_miss(
-            score_data
-        ) or score_indicates_contaminated_high_raw_near_miss(score_data)
+        is_success = score >= threshold and _evaluation_is_confirmed_success(
+            evaluation,
+            threshold,
+        )
+        is_near_miss = _evaluation_is_confirmed_near_miss(evaluation)
         prompt = str(evaluation.get("prompt", "")).strip()
         if not prompt or (not is_success and not is_near_miss):
             continue
@@ -1343,9 +1466,11 @@ def evaluate_and_record(
     target_temperature: float,
     target_max_tokens: int | None,
     target_system_prompt: str | None,
-    judge_model: str | None,
+    judge_models: list[str],
     judge_temperature: float,
     judge_max_tokens: int | None,
+    judge_parallelism: int,
+    judge_disagreement_threshold: float,
     objective_config: dict[str, Any],
     template_config: dict[str, Any] | None = None,
     parallelism: int,
@@ -1374,6 +1499,47 @@ def evaluate_and_record(
         )
         judge_audit = evaluation.get("judge")
         if isinstance(judge_audit, dict):
+            judge_usage = judge_audit.get("usage") or {}
+            for usage_key, state_key in (
+                ("prompt_tokens", "judge_prompt_tokens"),
+                ("completion_tokens", "judge_completion_tokens"),
+                ("total_tokens", "judge_total_tokens"),
+                ("cost", "judge_cost"),
+            ):
+                value = judge_usage.get(usage_key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    state[state_key] = state.get(state_key, 0) + value
+            members = judge_audit.get("members")
+            if isinstance(members, list):
+                state["judge_call_count"] = int(state.get("judge_call_count", 0)) + len(
+                    members
+                )
+                state["judge_member_failure_count"] = int(
+                    state.get("judge_member_failure_count", 0)
+                ) + sum(1 for member in members if member.get("error"))
+                aggregation = judge_audit.get("aggregation") or {}
+                if aggregation.get("degraded_quorum"):
+                    state["judge_degraded_quorum_count"] = int(
+                        state.get("judge_degraded_quorum_count", 0)
+                    ) + 1
+                score_range = aggregation.get("range")
+                if (
+                    isinstance(score_range, (int, float))
+                    and score_range > judge_disagreement_threshold
+                ):
+                    state["judge_disagreement_count"] = int(
+                        state.get("judge_disagreement_count", 0)
+                    ) + 1
+                if judge_audit.get("fallback_used"):
+                    state["judge_quorum_fallback_count"] = int(
+                        state.get("judge_quorum_fallback_count", 0)
+                    ) + 1
+            elif judge_audit.get("model"):
+                state["judge_call_count"] = int(state.get("judge_call_count", 0)) + 1
+                if judge_audit.get("error"):
+                    state["judge_member_failure_count"] = int(
+                        state.get("judge_member_failure_count", 0)
+                    ) + 1
             if judge_audit.get("fallback_used"):
                 state["judge_fallback_count"] = int(
                     state.get("judge_fallback_count", 0)
@@ -1396,6 +1562,12 @@ def evaluate_and_record(
         write_status(events_path.parent, state)
         results.append(evaluation)
 
+    judge_executor: concurrent.futures.ThreadPoolExecutor | None = None
+    if len(judge_models) > 1:
+        judge_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(judge_parallelism, len(judge_models))
+        )
+
     if parallelism <= 1 or len(candidates) <= 1:
         for candidate in candidates:
             try:
@@ -1407,11 +1579,12 @@ def evaluate_and_record(
                     target_temperature=target_temperature,
                     target_max_tokens=target_max_tokens,
                     target_system_prompt=target_system_prompt,
-                    judge_model=judge_model,
+                    judge_models=judge_models,
                     judge_temperature=judge_temperature,
                     judge_max_tokens=judge_max_tokens,
                     objective_config=objective_config,
                     template_config=template_config,
+                    judge_executor=judge_executor,
                 )
             except Exception as exc:
                 evaluation = failed_candidate_evaluation(
@@ -1421,39 +1594,41 @@ def evaluate_and_record(
                     error=exc,
                 )
             record(evaluation)
-        return results
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
-        futures = {
-            executor.submit(
-                evaluate_candidate,
-                client=client,
-                objective=objective,
-                candidate=candidate,
-                target_model=target_model,
-                target_temperature=target_temperature,
-                target_max_tokens=target_max_tokens,
-                target_system_prompt=target_system_prompt,
-                judge_model=judge_model,
-                judge_temperature=judge_temperature,
-                judge_max_tokens=judge_max_tokens,
-                objective_config=objective_config,
-                template_config=template_config,
-            ): candidate
-            for candidate in candidates
-        }
-        for future in concurrent.futures.as_completed(futures):
-            candidate = futures[future]
-            try:
-                evaluation = future.result()
-            except Exception as exc:
-                evaluation = failed_candidate_evaluation(
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
+            futures = {
+                executor.submit(
+                    evaluate_candidate,
+                    client=client,
                     objective=objective,
                     candidate=candidate,
                     target_model=target_model,
-                    error=exc,
-                )
-            record(evaluation)
+                    target_temperature=target_temperature,
+                    target_max_tokens=target_max_tokens,
+                    target_system_prompt=target_system_prompt,
+                    judge_models=judge_models,
+                    judge_temperature=judge_temperature,
+                    judge_max_tokens=judge_max_tokens,
+                    objective_config=objective_config,
+                    template_config=template_config,
+                    judge_executor=judge_executor,
+                ): candidate
+                for candidate in candidates
+            }
+            for future in concurrent.futures.as_completed(futures):
+                candidate = futures[future]
+                try:
+                    evaluation = future.result()
+                except Exception as exc:
+                    evaluation = failed_candidate_evaluation(
+                        objective=objective,
+                        candidate=candidate,
+                        target_model=target_model,
+                        error=exc,
+                    )
+                record(evaluation)
+    if judge_executor is not None:
+        judge_executor.shutdown(wait=True)
     return results
 
 
@@ -1532,6 +1707,15 @@ def run_for_target(
         "target_error_count": 0,
         "candidate_exception_count": 0,
         "judge_fallback_count": 0,
+        "judge_call_count": 0,
+        "judge_member_failure_count": 0,
+        "judge_quorum_fallback_count": 0,
+        "judge_degraded_quorum_count": 0,
+        "judge_disagreement_count": 0,
+        "judge_prompt_tokens": 0,
+        "judge_completion_tokens": 0,
+        "judge_total_tokens": 0,
+        "judge_cost": 0.0,
         "perturbator_fallback_count": 0,
         "target_retry_count": 0,
         "judge_retry_count": 0,
@@ -1570,9 +1754,11 @@ def run_for_target(
         target_temperature=config["target_temperature"],
         target_max_tokens=config["target_max_tokens"],
         target_system_prompt=config.get("target_system_prompt") or None,
-        judge_model=config.get("judge_model"),
+        judge_models=config.get("judge_models", []),
         judge_temperature=config["judge_temperature"],
         judge_max_tokens=config["judge_max_tokens"],
+        judge_parallelism=config["judge_parallelism"],
+        judge_disagreement_threshold=config["judge_disagreement_threshold"],
         objective_config=config.get("objective_config", {}),
         template_config=template_config,
         parallelism=config["parallelism"],
@@ -1588,7 +1774,10 @@ def run_for_target(
     for generation in range(1, config["iterations"] + 1):
         if config["max_evaluations"] and state["evaluations"] >= config["max_evaluations"]:
             break
-        if config["stop_score"] and state["best_score"] >= config["stop_score"]:
+        if config["stop_score"] and any(
+            _evaluation_is_confirmed_success(item, float(config["stop_score"]))
+            for item in archive.elites()
+        ):
             break
 
         state["phase"] = "selecting_parents"
@@ -1742,9 +1931,11 @@ def run_for_target(
                 target_temperature=config["target_temperature"],
                 target_max_tokens=config["target_max_tokens"],
                 target_system_prompt=config.get("target_system_prompt") or None,
-                judge_model=config.get("judge_model"),
+                judge_models=config.get("judge_models", []),
                 judge_temperature=config["judge_temperature"],
                 judge_max_tokens=config["judge_max_tokens"],
+                judge_parallelism=config["judge_parallelism"],
+                judge_disagreement_threshold=config["judge_disagreement_threshold"],
                 objective_config=config.get("objective_config", {}),
                 template_config=template_config,
                 parallelism=config["parallelism"],
@@ -1806,9 +1997,8 @@ def run_for_target(
     saved_seed_info: dict[str, Any] | None = None
     successful_seed_threshold = float(config["successful_seed_score"])
     has_persistable_seed = any(
-        float(item.get("score", {}).get("total", 0) or 0) >= successful_seed_threshold
-        or score_indicates_capped_harm_near_miss(item.get("score", {}))
-        or score_indicates_contaminated_high_raw_near_miss(item.get("score", {}))
+        _evaluation_is_confirmed_success(item, successful_seed_threshold)
+        or _evaluation_is_confirmed_near_miss(item)
         for item in all_evals
     )
     if config.get("save_successful_seeds") and not config.get("dry_run") and has_persistable_seed:
@@ -1846,6 +2036,25 @@ def run_for_target(
             "target_error_count": int(state.get("target_error_count", 0)),
             "candidate_exception_count": int(state.get("candidate_exception_count", 0)),
             "judge_fallback_count": int(state.get("judge_fallback_count", 0)),
+            "judge_call_count": int(state.get("judge_call_count", 0)),
+            "judge_member_failure_count": int(
+                state.get("judge_member_failure_count", 0)
+            ),
+            "judge_quorum_fallback_count": int(
+                state.get("judge_quorum_fallback_count", 0)
+            ),
+            "judge_degraded_quorum_count": int(
+                state.get("judge_degraded_quorum_count", 0)
+            ),
+            "judge_disagreement_count": int(
+                state.get("judge_disagreement_count", 0)
+            ),
+            "judge_prompt_tokens": int(state.get("judge_prompt_tokens", 0)),
+            "judge_completion_tokens": int(
+                state.get("judge_completion_tokens", 0)
+            ),
+            "judge_total_tokens": int(state.get("judge_total_tokens", 0)),
+            "judge_cost": round(float(state.get("judge_cost", 0) or 0), 12),
             "perturbator_fallback_count": int(state.get("perturbator_fallback_count", 0)),
             "target_retry_count": int(state.get("target_retry_count", 0)),
             "judge_retry_count": int(state.get("judge_retry_count", 0)),
@@ -1891,7 +2100,7 @@ def write_summary(
 ) -> None:
     manifest = objective.MANIFEST
     scoring_method = manifest.get("scoring_method", "heuristic")
-    judge_model = config.get("judge_model") if scoring_method == "llm_judge" else ""
+    judge_models = config.get("judge_models", []) if scoring_method == "llm_judge" else []
     lines = [
         f"# {manifest['title']} Summary",
         "",
@@ -1900,7 +2109,8 @@ def write_summary(
         f"- Objective: {config['objective_text']}",
         f"- Score orientation: `{manifest['score_orientation']}`",
         f"- Scoring method: `{scoring_method}`",
-        f"- Judge model: `{judge_model or ''}`",
+        f"- Judge models: `{', '.join(judge_models)}`",
+        f"- Judge aggregation: `{'scalar_median' if len(judge_models) > 1 else 'single'}`",
         f"- Perturbator model: `{config['perturbator_model']}`",
         f"- Dry run: `{config['dry_run']}`",
         f"- Audit note: `events.jsonl` preserves complete target inputs and responses.",

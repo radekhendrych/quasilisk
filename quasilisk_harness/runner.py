@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,15 @@ from .utils import safe_slug, split_models, write_json, write_status
 DEFAULT_CONFIG: dict[str, Any] = {
     "perturbator_model": os.environ.get("OPENROUTER_PERTURBATOR_MODEL"),
     "judge_model": os.environ.get("OPENROUTER_JUDGE_MODEL"),
+    "judge_models": None,
     "iterations": 8,
     "parents_per_iteration": 2,
     "offspring_per_parent": 3,
     "archive_per_cell": 2,
     "max_evaluations": 80,
     "parallelism": 1,
+    "judge_parallelism": 3,
+    "judge_disagreement_threshold": 20.0,
     "target_temperature": 0.2,
     "perturbator_temperature": 0.8,
     "judge_temperature": 0.0,
@@ -91,7 +95,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="OpenRouter target model id. May be repeated or comma-separated.",
     )
     parser.add_argument("--perturbator-model")
-    parser.add_argument("--judge-model")
+    parser.add_argument(
+        "--judge-model",
+        dest="judge_models",
+        action="append",
+        help="OpenRouter judge model id. May be repeated or comma-separated, up to three.",
+    )
     parser.add_argument("--seed-file", type=Path)
     parser.add_argument("--seed-library-dir", type=Path)
     parser.add_argument(
@@ -115,6 +124,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-evaluations", type=int)
     parser.add_argument("--stop-score", type=float)
     parser.add_argument("--parallelism", type=int)
+    parser.add_argument("--judge-parallelism", type=int)
+    parser.add_argument("--judge-disagreement-threshold", type=float)
     parser.add_argument("--target-temperature", type=float)
     parser.add_argument("--perturbator-temperature", type=float)
     parser.add_argument("--judge-temperature", type=float)
@@ -201,7 +212,7 @@ def merge_config(file_config: dict[str, Any], cli_args: argparse.Namespace) -> d
         elif key in TOKEN_LIMIT_KEYS:
             config[key] = value
             cli_token_limits.add(key)
-        elif key == "target_models":
+        elif key in {"target_models", "judge_models"}:
             config[key] = split_models(value)
         elif isinstance(value, Path):
             config[key] = str(value)
@@ -218,6 +229,30 @@ def merge_config(file_config: dict[str, Any], cli_args: argparse.Namespace) -> d
         for value in config["target_models"]:
             normalized.extend(split_models([str(value)]))
         config["target_models"] = normalized
+    if getattr(cli_args, "judge_models", None):
+        judge_values: Any = config.get("judge_models")
+    elif "judge_models" in file_config:
+        judge_values = file_config.get("judge_models")
+    elif "judge_model" in file_config:
+        judge_values = file_config.get("judge_model")
+    else:
+        judge_values = DEFAULT_CONFIG.get("judge_model")
+    if isinstance(judge_values, str):
+        config["judge_models"] = split_models([judge_values])
+    elif isinstance(judge_values, list):
+        normalized_judges: list[str] = []
+        for value in judge_values:
+            normalized_judges.extend(split_models([str(value)]))
+        config["judge_models"] = normalized_judges
+    elif judge_values is None:
+        config["judge_models"] = []
+    else:
+        config["judge_models"] = judge_values
+    config["judge_model"] = (
+        config["judge_models"][0]
+        if isinstance(config["judge_models"], list) and len(config["judge_models"]) == 1
+        else None
+    )
     return config
 
 
@@ -248,6 +283,7 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "archive_per_cell",
         "max_evaluations",
         "parallelism",
+        "judge_parallelism",
         "retries",
         "summary_response_chars",
         "max_successful_seeds_per_model",
@@ -261,6 +297,7 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "target_temperature",
         "perturbator_temperature",
         "judge_temperature",
+        "judge_disagreement_threshold",
         "timeout",
         "successful_seed_score",
         "parent_plan_regression_threshold",
@@ -279,15 +316,19 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
             config["target_models"] = ["dryrun/target"]
         if not config.get("perturbator_model"):
             config["perturbator_model"] = "dryrun/perturbator"
-        if objective_uses_llm_judge(objective) and not config.get("judge_model"):
+        if objective_uses_llm_judge(objective) and not config.get("judge_models"):
+            config["judge_models"] = ["dryrun/judge"]
             config["judge_model"] = "dryrun/judge"
     else:
         if not config.get("target_models"):
             raise SystemExit("--target-model or target_models config is required unless dry_run is true")
         if not config.get("perturbator_model"):
             raise SystemExit("--perturbator-model or perturbator_model config is required")
-        if objective_uses_llm_judge(objective) and not config.get("judge_model"):
-            raise SystemExit("--judge-model or judge_model config is required for llm_judge objectives")
+        if objective_uses_llm_judge(objective) and not config.get("judge_models"):
+            raise SystemExit(
+                "--judge-model, judge_model, or judge_models config is required "
+                "for llm_judge objectives"
+            )
         if not os.environ.get(config["api_key_env"]):
             raise SystemExit(f"{config['api_key_env']} must be set unless dry_run is true")
 
@@ -301,6 +342,10 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("archive_per_cell must be > 0")
     if config["parallelism"] <= 0:
         raise SystemExit("parallelism must be > 0")
+    if config["judge_parallelism"] <= 0:
+        raise SystemExit("judge_parallelism must be > 0")
+    if config["judge_disagreement_threshold"] < 0:
+        raise SystemExit("judge_disagreement_threshold must be >= 0")
     if config["max_evaluations"] < 0:
         raise SystemExit("max_evaluations must be >= 0")
     if config["stop_score"] < 0:
@@ -319,6 +364,28 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("objective_config must be a JSON object")
     if not isinstance(config.get("templates"), dict):
         raise SystemExit("templates must be a JSON object")
+    judge_models = config.get("judge_models")
+    if not isinstance(judge_models, list) or not all(
+        isinstance(model, str) and model.strip() for model in judge_models
+    ):
+        raise SystemExit("judge_models must be a JSON list of model ids")
+    if len(judge_models) > 3:
+        raise SystemExit("judge_models supports at most 3 models")
+    if len(set(judge_models)) != len(judge_models):
+        raise SystemExit("judge_models must not contain duplicate model ids")
+    overlap = sorted(set(judge_models) & set(config.get("target_models") or []))
+    if overlap:
+        print(
+            "Warning: target model is also configured as a judge: "
+            + ", ".join(overlap),
+            file=sys.stderr,
+        )
+    if len(judge_models) > 1 and not callable(
+        getattr(objective, "aggregate_judge_scores", None)
+    ):
+        raise SystemExit(
+            f"Objective {objective.OBJECTIVE_ID!r} does not support multiple judges"
+        )
     config["parent_plan_memory_enabled"] = bool(config.get("parent_plan_memory_enabled"))
     config["fail_fast"] = bool(config.get("fail_fast"))
     config["force_out_dir"] = bool(config.get("force_out_dir"))
@@ -400,6 +467,15 @@ def _failed_target_summary(
             "target_error_count": 0,
             "candidate_exception_count": 0,
             "judge_fallback_count": 0,
+            "judge_call_count": 0,
+            "judge_member_failure_count": 0,
+            "judge_quorum_fallback_count": 0,
+            "judge_degraded_quorum_count": 0,
+            "judge_disagreement_count": 0,
+            "judge_prompt_tokens": 0,
+            "judge_completion_tokens": 0,
+            "judge_total_tokens": 0,
+            "judge_cost": 0.0,
             "perturbator_fallback_count": 0,
             "target_retry_count": 0,
             "judge_retry_count": 0,

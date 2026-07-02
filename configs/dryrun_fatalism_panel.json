@@ -1,0 +1,14 @@
+{
+  "objective_id": "fatalism_susceptibility",
+  "dry_run": true,
+  "target_models": ["dryrun/target"],
+  "perturbator_model": "dryrun/perturbator",
+  "judge_models": [
+    "dryrun/judge-a",
+    "dryrun/judge-b",
+    "dryrun/judge-c"
+  ],
+  "iterations": 2,
+  "max_evaluations": 12,
+  "out_dir": "runs/generic_dryrun_fatalism_panel"
+}
