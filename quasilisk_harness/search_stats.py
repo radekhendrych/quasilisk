@@ -10,7 +10,7 @@ from typing import Any
 from .utils import append_jsonl, utc_now, write_json
 
 
-SEARCH_STATS_SCHEMA_VERSION = 1
+SEARCH_STATS_SCHEMA_VERSION = 2
 ArchiveSnapshot = dict[tuple[str, ...], dict[str, Any]]
 
 
@@ -88,10 +88,21 @@ class SearchStatsTracker:
         error: str | None,
     ) -> None:
         attempt = self._attempts[attempt_id]
+        generated_candidates = [
+            candidate
+            for candidate in accepted_candidates
+            if candidate.metadata.get("evaluation_role") != "control"
+        ]
+        control_candidates = [
+            candidate
+            for candidate in accepted_candidates
+            if candidate.metadata.get("evaluation_role") == "control"
+        ]
         attempt["plan"] = _compact_plan(plan)
         attempt["perturbator"] = {
             "produced": int(produced),
-            "accepted": len(accepted_candidates),
+            "accepted": len(generated_candidates),
+            "controls": len(control_candidates),
             "fallback_used": bool(audit.get("fallback_used")),
             "retry_count": int(audit.get("retry_count", 0) or 0),
             "usage": dict(audit.get("usage") or {}),
@@ -114,10 +125,14 @@ class SearchStatsTracker:
         archive_after: ArchiveSnapshot,
     ) -> list[dict[str, Any]]:
         scheduled_by_attempt: dict[str, set[str]] = defaultdict(set)
+        task_by_candidate: dict[str, dict[str, Any]] = {}
         for candidate in scheduled_candidates:
             attempt_id = str(candidate.metadata.get("perturbation_attempt_id") or "")
             if attempt_id:
                 scheduled_by_attempt[attempt_id].add(str(candidate.id))
+            task = candidate.metadata.get("mutation_task")
+            if isinstance(task, dict):
+                task_by_candidate[str(candidate.id)] = task
 
         evaluations_by_attempt: dict[str, list[dict[str, Any]]] = defaultdict(list)
         successful_evaluation_by_id: dict[str, dict[str, Any]] = {}
@@ -159,6 +174,62 @@ class SearchStatsTracker:
             parent_score = float(attempt["parent"]["score"])
             child_scores = [_score_total(item) for item in successful]
             deltas = [score - parent_score for score in child_scores]
+            comparison_records: list[dict[str, Any]] = []
+            operator_outcomes: dict[str, dict[str, int]] = defaultdict(
+                lambda: {
+                    "evaluated": 0,
+                    "comparable": 0,
+                    "improved": 0,
+                    "retained": 0,
+                    "regressed": 0,
+                    "unscored": 0,
+                }
+            )
+            for evaluation in child_evaluations:
+                metadata = evaluation.get("metadata")
+                comparison = (
+                    metadata.get("parent_child_comparison")
+                    if isinstance(metadata, dict)
+                    else None
+                )
+                candidate_id = str(evaluation.get("candidate_id", ""))
+                task = task_by_candidate.get(candidate_id, {})
+                operator_id = str(task.get("operator_id") or "legacy_unspecified")
+                role = str(task.get("evaluation_role") or "search")
+                if role == "control":
+                    operator_id = "replay_control"
+                aggregate = operator_outcomes[operator_id]
+                aggregate["evaluated"] += 1
+                if isinstance(comparison, dict):
+                    comparison_records.append(comparison)
+                    classification = str(
+                        comparison.get("classification") or "unscored"
+                    )
+                    if comparison.get("comparable"):
+                        aggregate["comparable"] += 1
+                    aggregate[classification] = int(
+                        aggregate.get(classification, 0)
+                    ) + 1
+                else:
+                    aggregate["comparable"] += 1
+                    if _score_total(evaluation) > parent_score:
+                        aggregate["improved"] += 1
+                    elif _score_total(evaluation) == parent_score:
+                        aggregate["retained"] += 1
+                    else:
+                        aggregate["regressed"] += 1
+            comparable = [
+                item for item in comparison_records if item.get("comparable")
+            ]
+            classified_improved = sum(
+                item.get("classification") == "improved" for item in comparable
+            )
+            classified_retained = sum(
+                item.get("classification") == "retained" for item in comparable
+            )
+            classified_regressed = sum(
+                item.get("classification") == "regressed" for item in comparable
+            )
             accepted_ids = set(attempt.get("accepted_candidate_ids", ()))
             scheduled_ids = scheduled_by_attempt.get(attempt_id, set())
             credit = cell_credits.get(attempt_id, {})
@@ -177,7 +248,29 @@ class SearchStatsTracker:
                     sum(max(0.0, delta) for delta in deltas),
                     3,
                 ),
-                "improved_children": sum(1 for delta in deltas if delta > 0),
+                "comparable_children": (
+                    len(comparable) if comparison_records else len(successful)
+                ),
+                "unscored_children": (
+                    len(comparison_records) - len(comparable)
+                    if comparison_records
+                    else 0
+                ),
+                "improved_children": (
+                    classified_improved
+                    if comparison_records
+                    else sum(1 for delta in deltas if delta > 0)
+                ),
+                "retained_children": (
+                    classified_retained
+                    if comparison_records
+                    else sum(1 for delta in deltas if delta == 0)
+                ),
+                "regressed_children": (
+                    classified_regressed
+                    if comparison_records
+                    else sum(1 for delta in deltas if delta < 0)
+                ),
                 "final_archive_retained": sum(
                     1
                     for evaluation in successful
@@ -208,6 +301,7 @@ class SearchStatsTracker:
                     "budget_truncated": outcome["budget_truncated"],
                 },
                 "outcome": outcome,
+                "operator_outcomes": dict(operator_outcomes),
                 "rejection_reasons": attempt["rejection_reasons"],
             }
             attempt["completed"] = True
@@ -223,6 +317,16 @@ class SearchStatsTracker:
         by_strategy: dict[str, list[dict[str, Any]]] = defaultdict(list)
         by_route_case: dict[str, list[dict[str, Any]]] = defaultdict(list)
         by_generation: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        by_operator: dict[str, dict[str, int]] = defaultdict(
+            lambda: {
+                "evaluated": 0,
+                "comparable": 0,
+                "improved": 0,
+                "retained": 0,
+                "regressed": 0,
+                "unscored": 0,
+            }
+        )
         rejection_reasons: Counter[str] = Counter()
 
         for record in self._completed:
@@ -239,6 +343,11 @@ class SearchStatsTracker:
             by_strategy[strategy].append(record)
             by_route_case[route_case].append(record)
             by_generation[str(record["generation"])].append(record)
+            for operator_id, outcome in (
+                record.get("operator_outcomes") or {}
+            ).items():
+                for key in by_operator[operator_id]:
+                    by_operator[operator_id][key] += int(outcome.get(key, 0))
             rejection_reasons.update(record.get("rejection_reasons") or {})
 
         parent_cell_aggregates = _aggregate_groups(by_parent_cell)
@@ -264,6 +373,19 @@ class SearchStatsTracker:
             "by_strategy": _aggregate_groups(by_strategy),
             "by_route_case": _aggregate_groups(by_route_case),
             "by_generation": _aggregate_groups(by_generation),
+            "by_operator": {
+                operator_id: {
+                    **outcome,
+                    "improvement_rate": _ratio(
+                        outcome["improved"], outcome["comparable"]
+                    ),
+                    "retention_rate": _ratio(
+                        outcome["improved"] + outcome["retained"],
+                        outcome["comparable"],
+                    ),
+                }
+                for operator_id, outcome in sorted(by_operator.items())
+            },
             "rejection_reasons": dict(sorted(rejection_reasons.items())),
         }
 
@@ -275,6 +397,9 @@ class SearchStatsTracker:
             "search_attempts_completed": summary["attempts_completed"],
             "perturbator_validity_rate": overall["validity_rate"],
             "perturbator_improvement_rate": overall["improvement_rate"],
+            "perturbator_retention_rate": overall["retention_rate"],
+            "perturbator_regression_rate": overall["regression_rate"],
+            "perturbator_unscored_rate": overall["unscored_rate"],
             "perturbator_archive_yield": overall["archive_yield"],
             "perturbator_new_cell_yield": overall["new_cell_yield"],
         }
@@ -426,6 +551,24 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     improved = sum(
         int(item["outcome"].get("improved_children", 0)) for item in records
     )
+    comparable = sum(
+        int(
+            item["outcome"].get(
+                "comparable_children",
+                item["outcome"].get("non_error_children", 0),
+            )
+        )
+        for item in records
+    )
+    retained_comparisons = sum(
+        int(item["outcome"].get("retained_children", 0)) for item in records
+    )
+    regressed_comparisons = sum(
+        int(item["outcome"].get("regressed_children", 0)) for item in records
+    )
+    unscored = sum(
+        int(item["outcome"].get("unscored_children", 0)) for item in records
+    )
     retained = sum(
         int(item["outcome"].get("final_archive_retained", 0)) for item in records
     )
@@ -485,6 +628,27 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         int(item["outcome"].get("improved_children", 0))
         for item in model_records
     )
+    model_comparable = sum(
+        int(
+            item["outcome"].get(
+                "comparable_children",
+                item["outcome"].get("non_error_children", 0),
+            )
+        )
+        for item in model_records
+    )
+    model_retained_comparisons = sum(
+        int(item["outcome"].get("retained_children", 0))
+        for item in model_records
+    )
+    model_regressed_comparisons = sum(
+        int(item["outcome"].get("regressed_children", 0))
+        for item in model_records
+    )
+    model_unscored = sum(
+        int(item["outcome"].get("unscored_children", 0))
+        for item in model_records
+    )
     model_retained = sum(
         int(item["outcome"].get("final_archive_retained", 0))
         for item in model_records
@@ -524,6 +688,10 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "evaluated": evaluated,
         "non_error_children": non_error,
         "improved_children": improved,
+        "comparable_children": comparable,
+        "retained_children": retained_comparisons,
+        "regressed_children": regressed_comparisons,
+        "unscored_children": unscored,
         "final_archive_retained": retained,
         "new_cells_created": new_cells,
         "distinct_parent_count": len(
@@ -548,7 +716,13 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "validity_rate": _ratio(model_accepted, model_produced),
         "evaluation_yield": _ratio(model_non_error, model_evaluated),
-        "improvement_rate": _ratio(model_improved, model_non_error),
+        "improvement_rate": _ratio(model_improved, model_comparable),
+        "retention_rate": _ratio(
+            model_improved + model_retained_comparisons,
+            model_comparable,
+        ),
+        "regression_rate": _ratio(model_regressed_comparisons, model_comparable),
+        "unscored_rate": _ratio(model_unscored, model_evaluated),
         "archive_yield": _ratio(model_retained, model_evaluated),
         "new_cell_yield": _ratio(model_new_cells, model_evaluated),
         "mean_score_delta": _ratio(model_delta_sum, model_non_error),
@@ -569,7 +743,13 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             improving_attempts,
             attempts,
         ),
-        "search_improvement_rate": _ratio(improved, non_error),
+        "search_improvement_rate": _ratio(improved, comparable),
+        "search_retention_rate": _ratio(
+            improved + retained_comparisons,
+            comparable,
+        ),
+        "search_regression_rate": _ratio(regressed_comparisons, comparable),
+        "search_unscored_rate": _ratio(unscored, evaluated),
         "search_archive_yield": _ratio(retained, evaluated),
         "search_new_cell_yield": _ratio(new_cells, evaluated),
         "search_mean_score_delta": _ratio(delta_sum, non_error),

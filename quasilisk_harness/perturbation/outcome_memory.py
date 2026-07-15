@@ -6,6 +6,7 @@ import dataclasses
 from collections import defaultdict
 from typing import Any
 
+from quasilisk_harness.perturbation.comparison import score_quality
 from quasilisk_harness.perturbation.models import PerturbationPlan
 
 
@@ -153,6 +154,21 @@ class ParentPlanOutcomeMemory:
         skipped_children: dict[ParentPlanKey, int] = defaultdict(int)
         for evaluation in child_evaluations:
             metadata = evaluation.get("metadata")
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("evaluation_role") == "control"
+            ):
+                continue
+            mutation_task = (
+                metadata.get("mutation_task")
+                if isinstance(metadata, dict)
+                else None
+            )
+            if (
+                isinstance(mutation_task, dict)
+                and mutation_task.get("operator_id") != "legacy_planned_rewrite"
+            ):
+                continue
             plan_data = (
                 metadata.get("perturbation_plan")
                 if isinstance(metadata, dict)
@@ -166,7 +182,11 @@ class ParentPlanOutcomeMemory:
             )
             if key is None:
                 continue
-            if evaluation.get("error") or not evaluation.get("response"):
+            if (
+                evaluation.get("error")
+                or not evaluation.get("response")
+                or score_quality(evaluation) == "unscored"
+            ):
                 skipped_children[key] += 1
                 continue
             grouped[key].append(_score_total(evaluation))

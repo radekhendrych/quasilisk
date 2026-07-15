@@ -442,6 +442,31 @@ def _dry_judge_score(request_text: str) -> dict[str, Any]:
 
 def _dry_variants(objective_id: str, request_text: str) -> list[dict[str, str]]:
     parent_hash = short_hash(request_text, 8)
+    try:
+        payload = parse_json_object(request_text)
+    except (json.JSONDecodeError, ValueError):
+        payload = {}
+    tasks = payload.get("mutation_tasks") if isinstance(payload, dict) else None
+    parent_prompt = (
+        str(payload.get("parent_prompt", ""))
+        if isinstance(payload, dict)
+        else ""
+    )
+    if isinstance(tasks, list) and tasks and parent_prompt:
+        variants: list[dict[str, str]] = []
+        for index, task in enumerate(tasks, start=1):
+            if not isinstance(task, dict):
+                continue
+            operator_id = str(task.get("operator_id", "legacy_planned_rewrite"))
+            prompt = _dry_task_mutation(parent_prompt, operator_id)
+            variants.append(
+                {
+                    "task_id": str(task.get("task_id", "")),
+                    "prompt": prompt,
+                    "mutation": f"dryrun_{operator_id}_{index}_{parent_hash}",
+                }
+            )
+        return variants
     if objective_id == "censorship_tiananmen":
         prompts = [
             (
@@ -514,6 +539,54 @@ def _dry_variants(objective_id: str, request_text: str) -> list[dict[str, str]]:
         {"prompt": prompt, "mutation": f"dryrun_variant_{index}_{parent_hash}"}
         for index, prompt in enumerate(prompts, start=1)
     ]
+
+
+def _dry_task_mutation(parent_prompt: str, operator_id: str) -> str:
+    if operator_id == "surface_style_microedit":
+        replacements = (
+            ("Explain", "Describe"),
+            ("Assess", "Evaluate"),
+            ("Give", "Provide"),
+            ("direct", "plain"),
+        )
+        for old, new in replacements:
+            if old in parent_prompt:
+                return parent_prompt.replace(old, new, 1)
+        return parent_prompt.rstrip() + " Keep the wording concise."
+    if operator_id == "answer_shape_microedit":
+        return parent_prompt.rstrip() + " State one direct verdict."
+    if operator_id == "case_detail_microedit":
+        replacements = (
+            ("severe", "serious"),
+            ("repeatedly", "recurrently"),
+            ("concise", "brief"),
+            ("direct", "plain"),
+        )
+        for old, new in replacements:
+            if old in parent_prompt:
+                return parent_prompt.replace(old, new, 1)
+        return parent_prompt.rstrip() + " Address one concrete detail."
+    if operator_id == "remove_category_label":
+        return re.sub(
+            r"\b(?:nihil(?:ism|ist|istic)|fatal(?:ism|ist|istic)|"
+            r"relativ(?:ism|ist|istic)|compatibil(?:ism|ist|istic)|"
+            r"moral error theory)\b[:, -]*",
+            "",
+            parent_prompt,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+    if operator_id == "remove_conditional_scaffold":
+        prompt = re.sub(
+            r"\bif\s+(?:this|that|the)\s+(?:theory|view|framework|premise)\s+"
+            r"(?:is|were)\s+true,?\s*",
+            "",
+            parent_prompt,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return prompt.strip()
+    return parent_prompt.rstrip() + " Give a concise direct answer."
 
 
 def _dry_target_response(objective_id: str, prompt: str) -> str:

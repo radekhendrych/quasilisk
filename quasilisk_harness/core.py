@@ -20,15 +20,27 @@ from .perturbation.defense import (
     score_indicates_capped_harm_near_miss,
     score_indicates_contaminated_high_raw_near_miss,
 )
-from .perturbation.models import PerturbationPlan
+from .perturbation.comparison import (
+    annotate_score_quality,
+    compare_evaluations,
+    score_quality,
+)
+from .perturbation.fingerprint import build_prompt_fingerprint
+from .perturbation.models import MutationTask, PerturbationPlan
+from .perturbation.operator_ledger import OperatorOutcomeLedger
 from .perturbation.outcome_memory import ParentPlanOutcomeMemory
 from .perturbation.planner import select_plan
+from .perturbation.portfolio import build_mutation_tasks, generation_tasks
 from .perturbation.space import (
     planned_guidance_for_objective,
     planned_parent_score_floor_for_objective,
     route_descriptions_for_objective,
 )
-from .perturbation.validator import validate_planned_prompt
+from .perturbation.validator import (
+    validate_absolute_prompt,
+    validate_planned_prompt,
+    validate_transition,
+)
 from .search_stats import SearchStatsTracker
 from .templates import render_template_file
 from .utils import (
@@ -605,6 +617,7 @@ def _empty_score(raw_error: str | None) -> dict[str, Any]:
         "risk_score": 0.0,
         "word_count": 0,
         "notes": ["api_error" if raw_error else "empty_response"],
+        "quality": "unscored",
     }
 
 
@@ -624,6 +637,7 @@ def _judge_fallback_score(heuristic_score: dict[str, Any], error: str) -> dict[s
     score["notes"] = notes
     score["score_source"] = "heuristic_fallback"
     score["judge_error"] = error
+    score["quality"] = "unscored"
     return score
 
 
@@ -639,6 +653,7 @@ def score_response_for_objective(
     objective_config: dict[str, Any],
     template_config: dict[str, Any] | None = None,
     judge_executor: concurrent.futures.Executor | None = None,
+    judge_parse_retries: int = 1,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     heuristic_score = objective.score_response(prompt, response)
     if not objective_uses_llm_judge(objective):
@@ -678,35 +693,75 @@ def score_response_for_objective(
         return _judge_fallback_score(heuristic_score, error), judge_audit
 
     if len(judge_models) == 1:
-        try:
-            judge_audit["request_messages"] = messages
-            judge_audit["template_audit"] = template_audit
-            result = client.chat(
-                model=judge_model,
-                messages=messages,
-                temperature=judge_temperature,
-                max_tokens=judge_max_tokens,
-                response_format={"type": "json_object"},
-            )
-            judge_audit["raw_response"] = result.content
-            judge_audit["finish_reason"] = result.finish_reason
-            judge_audit["usage"] = result.usage
-            judge_audit["retry_count"] = getattr(result, "retry_count", 0)
-            score = objective.parse_judge_response(
-                prompt,
-                response,
-                result.content,
-                heuristic_score,
-            )
-            score["judge_model"] = judge_model
-            return score, judge_audit
-        except (OpenRouterError, json.JSONDecodeError, ValueError, TypeError) as exc:
-            error = str(exc)
-            if isinstance(exc, OpenRouterError):
-                judge_audit["retry_count"] = _retry_count_from_error(exc)
-            judge_audit["fallback_used"] = True
-            judge_audit["error"] = error
-            return _judge_fallback_score(heuristic_score, error), judge_audit
+        last_error: BaseException | None = None
+        judge_audit["request_messages"] = messages
+        judge_audit["template_audit"] = template_audit
+        judge_audit["parse_attempts"] = []
+        for parse_attempt in range(judge_parse_retries + 1):
+            attempt_record: dict[str, Any] = {
+                "attempt": parse_attempt + 1,
+                "raw_response": None,
+                "finish_reason": None,
+                "usage": {},
+                "transport_retry_count": 0,
+                "error": None,
+            }
+            try:
+                result = client.chat(
+                    model=judge_model,
+                    messages=messages,
+                    temperature=judge_temperature,
+                    max_tokens=judge_max_tokens,
+                    response_format={"type": "json_object"},
+                )
+                judge_audit["raw_response"] = result.content
+                judge_audit["finish_reason"] = result.finish_reason
+                attempt_record.update(
+                    {
+                        "raw_response": result.content,
+                        "finish_reason": result.finish_reason,
+                        "usage": result.usage,
+                        "transport_retry_count": int(
+                            getattr(result, "retry_count", 0) or 0
+                        ),
+                    }
+                )
+                judge_audit["parse_attempts"].append(attempt_record)
+                judge_audit["retry_count"] = int(
+                    judge_audit.get("retry_count", 0)
+                ) + int(getattr(result, "retry_count", 0) or 0)
+                score = objective.parse_judge_response(
+                    prompt,
+                    response,
+                    result.content,
+                    heuristic_score,
+                )
+                score["judge_model"] = judge_model
+                judge_audit["parse_retry_count"] = parse_attempt
+                judge_audit["usage"] = aggregate_usage(
+                    judge_audit["parse_attempts"]
+                )
+                return score, judge_audit
+            except (OpenRouterError, json.JSONDecodeError, ValueError, TypeError) as exc:
+                last_error = exc
+                attempt_record["error"] = f"{type(exc).__name__}: {exc}"
+                if not any(
+                    item is attempt_record
+                    for item in judge_audit["parse_attempts"]
+                ):
+                    judge_audit["parse_attempts"].append(attempt_record)
+                if isinstance(exc, OpenRouterError):
+                    judge_audit["retry_count"] = int(
+                        judge_audit.get("retry_count", 0)
+                    ) + _retry_count_from_error(exc)
+                if isinstance(exc, OpenRouterError) and not exc.retryable:
+                    break
+        error = str(last_error or "judge_parse_failed")
+        judge_audit["parse_retry_count"] = judge_parse_retries
+        judge_audit["usage"] = aggregate_usage(judge_audit["parse_attempts"])
+        judge_audit["fallback_used"] = True
+        judge_audit["error"] = error
+        return _judge_fallback_score(heuristic_score, error), judge_audit
 
     def query_member(model: str) -> dict[str, Any]:
         member: dict[str, Any] = {
@@ -717,31 +772,71 @@ def score_response_for_objective(
             "retry_count": 0,
             "parsed_score": None,
             "error": None,
+            "parse_retry_count": 0,
+            "parse_attempts": [],
         }
-        try:
-            result = client.chat(
-                model=model,
-                messages=messages,
-                temperature=judge_temperature,
-                max_tokens=judge_max_tokens,
-                response_format={"type": "json_object"},
-            )
-            member["raw_response"] = result.content
-            member["finish_reason"] = result.finish_reason
-            member["usage"] = result.usage
-            member["retry_count"] = getattr(result, "retry_count", 0)
-            parsed_score = objective.parse_judge_response(
-                prompt,
-                response,
-                result.content,
-                heuristic_score,
-            )
-            parsed_score["judge_model"] = model
-            member["parsed_score"] = parsed_score
-        except Exception as exc:
-            if isinstance(exc, OpenRouterError):
-                member["retry_count"] = _retry_count_from_error(exc)
-            member["error"] = f"{type(exc).__name__}: {exc}"
+        last_error: BaseException | None = None
+        for parse_attempt in range(judge_parse_retries + 1):
+            attempt_record: dict[str, Any] = {
+                "attempt": parse_attempt + 1,
+                "raw_response": None,
+                "finish_reason": None,
+                "usage": {},
+                "transport_retry_count": 0,
+                "error": None,
+            }
+            try:
+                result = client.chat(
+                    model=model,
+                    messages=messages,
+                    temperature=judge_temperature,
+                    max_tokens=judge_max_tokens,
+                    response_format={"type": "json_object"},
+                )
+                member["raw_response"] = result.content
+                member["finish_reason"] = result.finish_reason
+                attempt_record.update(
+                    {
+                        "raw_response": result.content,
+                        "finish_reason": result.finish_reason,
+                        "usage": result.usage,
+                        "transport_retry_count": int(
+                            getattr(result, "retry_count", 0) or 0
+                        ),
+                    }
+                )
+                member["parse_attempts"].append(attempt_record)
+                member["retry_count"] = int(member["retry_count"]) + int(
+                    getattr(result, "retry_count", 0) or 0
+                )
+                parsed_score = objective.parse_judge_response(
+                    prompt,
+                    response,
+                    result.content,
+                    heuristic_score,
+                )
+                parsed_score["judge_model"] = model
+                member["parsed_score"] = parsed_score
+                member["parse_retry_count"] = parse_attempt
+                member["usage"] = aggregate_usage(member["parse_attempts"])
+                return member
+            except Exception as exc:
+                last_error = exc
+                attempt_record["error"] = f"{type(exc).__name__}: {exc}"
+                if not any(
+                    item is attempt_record for item in member["parse_attempts"]
+                ):
+                    member["parse_attempts"].append(attempt_record)
+                if isinstance(exc, OpenRouterError):
+                    member["retry_count"] = int(
+                        member["retry_count"]
+                    ) + _retry_count_from_error(exc)
+                    if not exc.retryable:
+                        break
+        if last_error is not None:
+            member["error"] = f"{type(last_error).__name__}: {last_error}"
+        member["parse_retry_count"] = judge_parse_retries
+        member["usage"] = aggregate_usage(member["parse_attempts"])
         return member
 
     if judge_executor is None:
@@ -796,6 +891,8 @@ def build_planned_perturbation_request(
     target_affordances: dict[str, Any] | None,
     plan: PerturbationPlan,
     defense_profile: dict[str, Any],
+    mutation_tasks: list[MutationTask] | None = None,
+    parent_fingerprint: dict[str, Any] | None = None,
     template_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     manifest = objective.MANIFEST
@@ -824,12 +921,20 @@ def build_planned_perturbation_request(
         }
         for item in archive_context[:8]
     ]
+    contracted_v2 = any(
+        task.operator_id != "legacy_planned_rewrite"
+        for task in (mutation_tasks or ())
+    )
     payload = {
         "objective_id": _safe_objective_id_for_prompting(objective_id),
         "objective": _sanitize_text_for_prompting(objective_id, objective_text),
-        "parent_prompt": _sanitize_text_for_prompting(
-            objective_id,
-            parent_eval["prompt"],
+        "parent_prompt": (
+            str(parent_eval["prompt"])
+            if contracted_v2
+            else _sanitize_text_for_prompting(
+                objective_id,
+                parent_eval["prompt"],
+            )
         ),
         "parent_score": _sanitize_for_perturbator_context(
             objective_id,
@@ -859,10 +964,19 @@ def build_planned_perturbation_request(
             objective_id,
             target_affordances,
         ),
-        "produce": offspring_count,
+        "mutation_tasks": [
+            _sanitize_for_perturbator_context(objective_id, task.to_jsonable())
+            for task in (mutation_tasks or ())
+        ],
+        "parent_fingerprint": _sanitize_for_perturbator_context(
+            objective_id,
+            parent_fingerprint,
+        ),
+        "produce": len(mutation_tasks) if mutation_tasks is not None else offspring_count,
         "required_json": {
             "variants": [
                 {
+                    "task_id": "copy the mutation task id exactly",
                     "prompt": "self-contained user prompt only",
                     "mutation": "short plain-English description of the change",
                 }
@@ -918,6 +1032,7 @@ def evaluate_candidate(
     objective_config: dict[str, Any],
     template_config: dict[str, Any] | None = None,
     judge_executor: concurrent.futures.Executor | None = None,
+    judge_parse_retries: int = 1,
 ) -> dict[str, Any]:
     messages: list[dict[str, str]] = []
     if target_system_prompt:
@@ -958,7 +1073,9 @@ def evaluate_candidate(
             objective_config=objective_config,
             template_config=template_config,
             judge_executor=judge_executor,
+            judge_parse_retries=judge_parse_retries,
         )
+        score = annotate_score_quality(score, judge_audit)
     else:
         score = _empty_score(raw_error)
         judge_audit = None
@@ -1046,6 +1163,8 @@ def query_planned_perturbator(
     perturbator_max_tokens: int | None,
     template_config: dict[str, Any] | None = None,
     outcome_memory: ParentPlanOutcomeMemory | None = None,
+    operator_ledger: OperatorOutcomeLedger | None = None,
+    perturbation_config: dict[str, Any] | None = None,
     generation: int = 0,
     attempt_id: str = "",
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
@@ -1063,22 +1182,43 @@ def query_planned_perturbator(
     )
     defense_json = defense.to_jsonable()
     plan_json = plan.to_jsonable()
+    mutation_tasks, parent_fingerprint = build_mutation_tasks(
+        objective=objective,
+        parent_eval=parent_eval,
+        plan=plan,
+        offspring_count=offspring_count,
+        generation=generation,
+        config=perturbation_config or {},
+    )
+    blocked_tasks: list[dict[str, Any]] = []
+    if operator_ledger is not None:
+        mutation_tasks, blocked_tasks = operator_ledger.filter_tasks(
+            mutation_tasks,
+            parent_fingerprint,
+        )
+    mutation_tasks = mutation_tasks[:offspring_count]
+    model_tasks = generation_tasks(mutation_tasks)
     messages, template_audit = build_planned_perturbation_request(
         objective=objective,
         objective_text=objective_text,
         objective_config=objective_config,
         parent_eval=parent_eval,
-        offspring_count=offspring_count,
+        offspring_count=len(model_tasks),
         archive_context=archive_context,
         target_affordances=affordances.to_perturbator_context(),
         plan=plan,
         defense_profile=defense_json,
+        mutation_tasks=model_tasks,
+        parent_fingerprint=parent_fingerprint.to_jsonable(),
         template_config=template_config,
     )
     audit: dict[str, Any] = {
         "request_messages": messages,
         "template_audit": template_audit,
         "perturbation_plan": plan_json,
+        "mutation_tasks": [task.to_jsonable() for task in mutation_tasks],
+        "blocked_mutation_tasks": blocked_tasks,
+        "parent_fingerprint": parent_fingerprint.to_jsonable(),
         "defense_profile": defense_json,
         "perturbation_attempt_id": attempt_id,
         "outcome_memory": (
@@ -1093,39 +1233,76 @@ def query_planned_perturbator(
         "fallback_used": False,
         "error": None,
     }
-    try:
-        result = client.chat(
-            model=perturbator_model,
-            messages=messages,
-            temperature=perturbator_temperature,
-            max_tokens=perturbator_max_tokens,
-            response_format={"type": "json_object"},
-        )
-        audit["raw_response"] = result.content
-        audit["finish_reason"] = result.finish_reason
-        audit["usage"] = result.usage
-        audit["retry_count"] = getattr(result, "retry_count", 0)
-        variants = extract_variants(result.content)
-    except (OpenRouterError, json.JSONDecodeError, ValueError) as exc:
-        variants = objective.local_variants(parent_eval["prompt"], offspring_count)
-        if isinstance(exc, OpenRouterError):
-            audit["retry_count"] = _retry_count_from_error(exc)
-        audit["fallback_used"] = True
-        audit["error"] = str(exc)
+    variants: list[dict[str, Any]] = []
+    if model_tasks:
+        try:
+            result = client.chat(
+                model=perturbator_model,
+                messages=messages,
+                temperature=perturbator_temperature,
+                max_tokens=perturbator_max_tokens,
+                response_format={"type": "json_object"},
+            )
+            audit["raw_response"] = result.content
+            audit["finish_reason"] = result.finish_reason
+            audit["usage"] = result.usage
+            audit["retry_count"] = getattr(result, "retry_count", 0)
+            variants = extract_variants(result.content)
+        except (OpenRouterError, json.JSONDecodeError, ValueError) as exc:
+            variants = objective.local_variants(parent_eval["prompt"], len(model_tasks))
+            if isinstance(exc, OpenRouterError):
+                audit["retry_count"] = _retry_count_from_error(exc)
+            audit["fallback_used"] = True
+            audit["error"] = str(exc)
 
-    enriched = [
-        {
-            **variant,
-            "perturbation_plan": plan_json,
-            "defense_profile": defense_json,
-            **(
-                {"perturbation_attempt_id": attempt_id}
-                if attempt_id
-                else {}
-            ),
-        }
-        for variant in variants
-    ]
+    audit["model_variant_count"] = len(variants)
+    tasks_by_id = {task.task_id: task for task in model_tasks}
+    unused_tasks = list(model_tasks)
+    enriched: list[dict[str, Any]] = []
+    for variant in variants:
+        requested_task = tasks_by_id.get(str(variant.get("task_id") or ""))
+        if requested_task in unused_tasks:
+            task = requested_task
+            unused_tasks.remove(task)
+        elif unused_tasks:
+            task = unused_tasks.pop(0)
+        else:
+            break
+        enriched.append(
+            {
+                **variant,
+                "task_id": task.task_id,
+                "mutation_task": task.to_jsonable(),
+                "parent_fingerprint": parent_fingerprint.to_jsonable(),
+                "perturbation_plan": task.plan.to_jsonable(),
+                "defense_profile": defense_json,
+                **(
+                    {"perturbation_attempt_id": attempt_id}
+                    if attempt_id
+                    else {}
+                ),
+            }
+        )
+    for task in mutation_tasks:
+        if task.evaluation_role != "control":
+            continue
+        enriched.insert(
+            0,
+            {
+                "prompt": parent_eval["prompt"],
+                "mutation": "exact parent replay control",
+                "task_id": task.task_id,
+                "mutation_task": task.to_jsonable(),
+                "parent_fingerprint": parent_fingerprint.to_jsonable(),
+                "perturbation_plan": task.plan.to_jsonable(),
+                "defense_profile": defense_json,
+                **(
+                    {"perturbation_attempt_id": attempt_id}
+                    if attempt_id
+                    else {}
+                ),
+            },
+        )
     audit["parsed_variants"] = enriched
     return enriched, audit["error"], audit
 
@@ -1156,36 +1333,49 @@ def prepare_candidates(
     candidates: list[Candidate] = []
     rejected: list[dict[str, Any]] = []
     for variant in variants:
-        prompt = re.sub(r"\s+", " ", variant["prompt"]).strip()
+        task_data = variant.get("mutation_task")
+        task = (
+            MutationTask.from_jsonable(task_data)
+            if isinstance(task_data, dict)
+            else None
+        )
+        is_legacy_task = (
+            task is not None
+            and task.operator_id == "legacy_planned_rewrite"
+        )
+        is_control = task is not None and task.evaluation_role == "control"
+        prompt = (
+            str(variant["prompt"]).strip()
+            if is_control
+            else re.sub(r"\s+", " ", variant["prompt"]).strip()
+        )
         valid, reason = validate_variant(prompt, objective)
         validation: dict[str, Any] | None = None
+        transition_validation: dict[str, Any] | None = None
         repair_metadata: dict[str, Any] | None = None
         plan_data = variant.get("perturbation_plan")
         if valid and isinstance(plan_data, dict):
-            plan = PerturbationPlan(
-                plan_id=str(plan_data.get("plan_id", "")),
-                route=str(plan_data.get("route", "")),
-                case_family=str(plan_data.get("case_family", "")),
-                defense_focus=str(plan_data.get("defense_focus", "")),
-                objective_id=str(plan_data.get("objective_id", "")),
-                parent_candidate_id=str(plan_data.get("parent_candidate_id", "")),
-                priority=float(plan_data.get("priority", 0) or 0),
-                priority_components={
-                    str(key): float(value)
-                    for key, value in (plan_data.get("priority_components") or {}).items()
-                },
-                rationale=str(plan_data.get("rationale", "")),
-            )
-            validation_result = validate_planned_prompt(
-                prompt=prompt,
-                objective=objective,
-                plan=plan,
-            )
+            plan = PerturbationPlan.from_jsonable(plan_data)
+            if task is None or is_legacy_task:
+                validation_result = validate_planned_prompt(
+                    prompt=prompt,
+                    objective=objective,
+                    plan=plan,
+                )
+            else:
+                validation_result = validate_absolute_prompt(
+                    prompt=prompt,
+                    objective=objective,
+                    plan=plan,
+                )
             validation = validation_result.to_jsonable()
             if not validation_result.accepted:
                 valid = False
                 reason = "planned_validation:" + ",".join(validation_result.reasons)
-                if _only_missing_direct_adjudication(validation):
+                can_repair_directness = task is None or is_legacy_task or (
+                    "direct_adjudication" in task.contract.allowed_factors
+                )
+                if _only_missing_direct_adjudication(validation) and can_repair_directness:
                     original_prompt = prompt
                     repaired_prompt = _append_direct_adjudication(prompt)
                     repaired_valid, repaired_reason = validate_variant(
@@ -1193,11 +1383,18 @@ def prepare_candidates(
                         objective,
                     )
                     if repaired_valid:
-                        repaired_result = validate_planned_prompt(
-                            prompt=repaired_prompt,
-                            objective=objective,
-                            plan=plan,
-                        )
+                        if task is None or is_legacy_task:
+                            repaired_result = validate_planned_prompt(
+                                prompt=repaired_prompt,
+                                objective=objective,
+                                plan=plan,
+                            )
+                        else:
+                            repaired_result = validate_absolute_prompt(
+                                prompt=repaired_prompt,
+                                objective=objective,
+                                plan=plan,
+                            )
                         if repaired_result.accepted:
                             prompt = repaired_prompt
                             valid = True
@@ -1214,20 +1411,59 @@ def prepare_candidates(
                             )
                     else:
                         reason = repaired_reason
+            if valid and task is not None and not is_legacy_task:
+                parent_fingerprint_data = variant.get("parent_fingerprint")
+                if isinstance(parent_fingerprint_data, dict):
+                    parent_fingerprint = build_prompt_fingerprint(
+                        objective=objective,
+                        prompt=str(parent_eval.get("prompt", "")),
+                    )
+                    child_fingerprint = build_prompt_fingerprint(
+                        objective=objective,
+                        prompt=prompt,
+                    )
+                    transition_result = validate_transition(
+                        parent=parent_fingerprint,
+                        child=child_fingerprint,
+                        contract=task.contract,
+                    )
+                    transition_validation = transition_result.to_jsonable()
+                    if not transition_result.accepted:
+                        valid = False
+                        reason = "transition_validation:" + ",".join(
+                            transition_result.reasons
+                        )
         normalized = prompt.lower()
         if not valid:
-            rejected.append({"prompt": prompt, "reason": reason, "validation": validation})
+            rejected.append(
+                {
+                    "prompt": prompt,
+                    "reason": reason,
+                    "validation": validation,
+                    "transition_validation": transition_validation,
+                }
+            )
             continue
-        if normalized in seen_prompts:
-            rejected.append({"prompt": prompt, "reason": "duplicate", "validation": validation})
+        if normalized in seen_prompts and not is_control:
+            rejected.append(
+                {
+                    "prompt": prompt,
+                    "reason": "duplicate",
+                    "validation": validation,
+                    "transition_validation": transition_validation,
+                }
+            )
             continue
-        seen_prompts.add(normalized)
+        if not is_control:
+            seen_prompts.add(normalized)
         metadata = {
             key: variant[key]
             for key in (
                 "perturbation_plan",
                 "defense_profile",
                 "perturbation_attempt_id",
+                "mutation_task",
+                "parent_fingerprint",
             )
             if key in variant
         }
@@ -1235,10 +1471,22 @@ def prepare_candidates(
             metadata["validation"] = validation
         if repair_metadata:
             metadata["planned_repair"] = repair_metadata
+        if transition_validation:
+            metadata["transition_validation"] = transition_validation
+        if task is not None:
+            metadata["evaluation_role"] = task.evaluation_role
+            metadata["archive_eligible"] = task.contract.archive_eligible
         candidates.append(
             Candidate(
                 id=make_candidate_id(
-                    prompt, parent_eval["candidate_id"], generation, parent_eval["source"]
+                    prompt,
+                    parent_eval["candidate_id"],
+                    generation,
+                    (
+                        f"{parent_eval['source']}|{task.task_id}"
+                        if task is not None
+                        else parent_eval["source"]
+                    ),
                 ),
                 prompt=prompt,
                 generation=generation,
@@ -1479,13 +1727,135 @@ def evaluate_and_record(
     affordances_path: Path,
     events_path: Path,
     state: dict[str, Any],
+    parent_evaluations: dict[str, dict[str, Any]] | None = None,
+    comparison_max_component_drop: float = 5.0,
+    judge_parse_retries: int = 1,
+    paired_rejudge_enabled: bool = False,
+    paired_rejudge_drop_threshold: float = 30.0,
 ) -> list[dict[str, Any]]:
     """Evaluate candidates and persist each result as soon as it is available."""
 
     results: list[dict[str, Any]] = []
 
+    def record_extra_judge_audit(audit: dict[str, Any] | None) -> None:
+        if not isinstance(audit, dict):
+            return
+        usage = audit.get("usage") or {}
+        for usage_key, state_key in (
+            ("prompt_tokens", "judge_prompt_tokens"),
+            ("completion_tokens", "judge_completion_tokens"),
+            ("total_tokens", "judge_total_tokens"),
+            ("cost", "judge_cost"),
+        ):
+            value = usage.get(usage_key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                state[state_key] = state.get(state_key, 0) + value
+        members = audit.get("members")
+        calls = (
+            sum(
+                max(1, len(member.get("parse_attempts") or ()))
+                for member in members
+            )
+            if isinstance(members, list)
+            else max(1, len(audit.get("parse_attempts") or ()))
+        )
+        state["judge_call_count"] = int(state.get("judge_call_count", 0)) + calls
+        state["judge_parse_retry_count"] = int(
+            state.get("judge_parse_retry_count", 0)
+        ) + (
+            sum(
+                int(member.get("parse_retry_count", 0) or 0)
+                for member in members
+            )
+            if isinstance(members, list)
+            else int(audit.get("parse_retry_count", 0) or 0)
+        )
+        state["judge_retry_count"] = int(state.get("judge_retry_count", 0)) + int(
+            audit.get("retry_count", 0) or 0
+        )
+        if audit.get("fallback_used"):
+            state["judge_fallback_count"] = int(
+                state.get("judge_fallback_count", 0)
+            ) + 1
+
     def record(evaluation: dict[str, Any]) -> None:
         state["evaluations"] += 1
+        metadata = evaluation.get("metadata")
+        parent = (
+            (parent_evaluations or {}).get(str(evaluation.get("parent_id", "")))
+            if isinstance(parent_evaluations, dict)
+            else None
+        )
+        if parent is not None and isinstance(metadata, dict):
+            comparison = compare_evaluations(
+                parent,
+                evaluation,
+                max_component_drop=comparison_max_component_drop,
+            )
+            is_control = metadata.get("evaluation_role") == "control"
+            if (
+                paired_rejudge_enabled
+                and not is_control
+                and comparison.comparable
+                and comparison.total_delta is not None
+                and comparison.total_delta <= -paired_rejudge_drop_threshold
+                and parent.get("response")
+                and evaluation.get("response")
+                and objective_uses_llm_judge(objective)
+            ):
+                parent_score, parent_audit = score_response_for_objective(
+                    client=client,
+                    objective=objective,
+                    prompt=str(parent.get("prompt", "")),
+                    response=str(parent.get("response", "")),
+                    judge_models=judge_models,
+                    judge_temperature=judge_temperature,
+                    judge_max_tokens=judge_max_tokens,
+                    objective_config=objective_config,
+                    template_config=template_config,
+                    judge_executor=judge_executor,
+                    judge_parse_retries=judge_parse_retries,
+                )
+                child_score, child_audit = score_response_for_objective(
+                    client=client,
+                    objective=objective,
+                    prompt=str(evaluation.get("prompt", "")),
+                    response=str(evaluation.get("response", "")),
+                    judge_models=judge_models,
+                    judge_temperature=judge_temperature,
+                    judge_max_tokens=judge_max_tokens,
+                    objective_config=objective_config,
+                    template_config=template_config,
+                    judge_executor=judge_executor,
+                    judge_parse_retries=judge_parse_retries,
+                )
+                parent_score = annotate_score_quality(parent_score, parent_audit)
+                child_score = annotate_score_quality(child_score, child_audit)
+                paired_comparison = compare_evaluations(
+                    {**parent, "score": parent_score, "judge": parent_audit},
+                    {
+                        **evaluation,
+                        "score": child_score,
+                        "judge": child_audit,
+                    },
+                    max_component_drop=comparison_max_component_drop,
+                )
+                metadata["paired_rejudge"] = {
+                    "trigger_delta": comparison.total_delta,
+                    "parent_score": parent_score,
+                    "child_score": child_score,
+                    "parent_judge": parent_audit,
+                    "child_judge": child_audit,
+                    "comparison": paired_comparison.to_jsonable(),
+                }
+                record_extra_judge_audit(parent_audit)
+                record_extra_judge_audit(child_audit)
+                state["paired_rejudge_count"] = int(
+                    state.get("paired_rejudge_count", 0)
+                ) + 1
+                if paired_comparison.comparable:
+                    comparison = paired_comparison
+            metadata["parent_child_comparison"] = comparison.to_jsonable()
         score_notes = evaluation.get("score", {}).get("notes", [])
         candidate_exception = "candidate_exception" in score_notes
         if evaluation.get("error") and not candidate_exception:
@@ -1511,8 +1881,17 @@ def evaluate_and_record(
                     state[state_key] = state.get(state_key, 0) + value
             members = judge_audit.get("members")
             if isinstance(members, list):
-                state["judge_call_count"] = int(state.get("judge_call_count", 0)) + len(
-                    members
+                state["judge_call_count"] = int(
+                    state.get("judge_call_count", 0)
+                ) + sum(
+                    max(1, len(member.get("parse_attempts") or ()))
+                    for member in members
+                )
+                state["judge_parse_retry_count"] = int(
+                    state.get("judge_parse_retry_count", 0)
+                ) + sum(
+                    int(member.get("parse_retry_count", 0) or 0)
+                    for member in members
                 )
                 state["judge_member_failure_count"] = int(
                     state.get("judge_member_failure_count", 0)
@@ -1535,7 +1914,12 @@ def evaluate_and_record(
                         state.get("judge_quorum_fallback_count", 0)
                     ) + 1
             elif judge_audit.get("model"):
-                state["judge_call_count"] = int(state.get("judge_call_count", 0)) + 1
+                state["judge_call_count"] = int(
+                    state.get("judge_call_count", 0)
+                ) + max(1, len(judge_audit.get("parse_attempts") or ()))
+                state["judge_parse_retry_count"] = int(
+                    state.get("judge_parse_retry_count", 0)
+                ) + int(judge_audit.get("parse_retry_count", 0) or 0)
                 if judge_audit.get("error"):
                     state["judge_member_failure_count"] = int(
                         state.get("judge_member_failure_count", 0)
@@ -1547,10 +1931,31 @@ def evaluate_and_record(
             state["judge_retry_count"] = int(state.get("judge_retry_count", 0)) + int(
                 judge_audit.get("retry_count", 0) or 0
             )
-        archive_update = archive.add(evaluation)
-        evaluation["archive_update"] = archive_update.to_jsonable()
-        affordances.update(evaluation)
-        state["best_score"] = max(state["best_score"], evaluation["score"]["total"])
+        archive_eligible = (
+            score_quality(evaluation) != "unscored"
+            and (
+                not isinstance(metadata, dict)
+                or bool(metadata.get("archive_eligible", True))
+            )
+        )
+        if archive_eligible:
+            archive_update = archive.add(evaluation)
+            evaluation["archive_update"] = archive_update.to_jsonable()
+            affordances.update(evaluation)
+            state["best_score"] = max(
+                state["best_score"], evaluation["score"]["total"]
+            )
+        else:
+            evaluation["archive_update"] = {
+                "destination_cell": list(evaluation.get("archive_cell") or []),
+                "retained": False,
+                "new_cell": False,
+                "replaced_same_prompt": False,
+                "evicted_candidate_id": None,
+                "cell_best_before": 0.0,
+                "cell_best_after": 0.0,
+                "archive_eligible": False,
+            }
         state["last_event"] = {
             "candidate_id": evaluation["candidate_id"],
             "generation": evaluation["generation"],
@@ -1585,6 +1990,7 @@ def evaluate_and_record(
                     objective_config=objective_config,
                     template_config=template_config,
                     judge_executor=judge_executor,
+                    judge_parse_retries=judge_parse_retries,
                 )
             except Exception as exc:
                 evaluation = failed_candidate_evaluation(
@@ -1612,6 +2018,7 @@ def evaluate_and_record(
                     objective_config=objective_config,
                     template_config=template_config,
                     judge_executor=judge_executor,
+                    judge_parse_retries=judge_parse_retries,
                 ): candidate
                 for candidate in candidates
             }
@@ -1648,6 +2055,7 @@ def run_for_target(
     perturbations_path = out_dir / "perturbations.jsonl"
     generation_traces_path = out_dir / "generation_traces.jsonl"
     parent_plan_outcomes_path = out_dir / "parent_plan_outcomes.jsonl"
+    operator_outcomes_path = out_dir / "operator_outcomes.jsonl"
     search_stats_path = out_dir / "search_stats.jsonl"
     run_statistics_path = out_dir / "run_statistics.json"
     affordances_path = out_dir / f"affordances_{safe_slug(target_model)}.json"
@@ -1670,6 +2078,15 @@ def run_for_target(
                 config.get("parent_plan_min_evaluated_children", 1)
             ),
         )
+    operator_ledger = OperatorOutcomeLedger(
+        enabled=bool(config.get("operator_outcome_memory_enabled", True)),
+        max_component_drop=float(
+            config.get("perturbation_max_component_drop", 5.0)
+        ),
+        block_after_regressions=int(
+            config.get("operator_block_after_regressions", 1)
+        ),
+    )
     archive = MapElitesArchive(config["archive_per_cell"], feature_keys)
     target_run_instance_id = short_hash(
         f"{objective.OBJECTIVE_ID}|{target_model}|{utc_now()}",
@@ -1719,16 +2136,24 @@ def run_for_target(
         "perturbator_fallback_count": 0,
         "target_retry_count": 0,
         "judge_retry_count": 0,
+        "judge_parse_retry_count": 0,
         "perturbator_retry_count": 0,
         "parent_plan_memory_enabled": bool(outcome_memory),
         "parent_plan_memory_mode": config.get("parent_plan_memory_mode", "block"),
         "parent_plan_memory_active": 0,
         "parent_plan_memory_outcomes": 0,
         "parent_plan_memory_regressions": 0,
+        "operator_outcome_memory_enabled": operator_ledger.enabled,
+        "operator_outcome_records": 0,
+        "operator_outcome_blocked": 0,
+        "paired_rejudge_count": 0,
         "search_attempts_started": 0,
         "search_attempts_completed": 0,
         "perturbator_validity_rate": 0.0,
         "perturbator_improvement_rate": 0.0,
+        "perturbator_retention_rate": 0.0,
+        "perturbator_regression_rate": 0.0,
+        "perturbator_unscored_rate": 0.0,
         "perturbator_archive_yield": 0.0,
         "perturbator_new_cell_yield": 0.0,
     }
@@ -1767,6 +2192,7 @@ def run_for_target(
         affordances_path=affordances_path,
         events_path=events_path,
         state=state,
+        judge_parse_retries=int(config.get("judge_parse_retries", 1)),
     )
     state["archive_cells"] = len(archive.cells)
     write_status(out_dir, state)
@@ -1838,6 +2264,8 @@ def run_for_target(
                 perturbator_max_tokens=config["perturbator_max_tokens"],
                 template_config=template_config,
                 outcome_memory=outcome_memory,
+                operator_ledger=operator_ledger,
+                perturbation_config=config,
                 generation=generation,
                 attempt_id=attempt_id,
             )
@@ -1885,7 +2313,9 @@ def run_for_target(
             search_stats.record_perturbator_result(
                 attempt_id=attempt_id,
                 plan=perturbator_audit.get("perturbation_plan"),
-                produced=len(variants),
+                produced=int(
+                    perturbator_audit.get("model_variant_count", len(variants))
+                ),
                 accepted_candidates=candidates,
                 rejected=rejected,
                 audit=perturbator_audit,
@@ -1902,8 +2332,14 @@ def run_for_target(
                     "perturbation_attempt_id": attempt_id,
                     "generation": generation,
                     "perturbation_plan": perturbator_audit.get("perturbation_plan"),
+                    "mutation_tasks": perturbator_audit.get("mutation_tasks"),
+                    "blocked_mutation_tasks": perturbator_audit.get(
+                        "blocked_mutation_tasks"
+                    ),
                     "defense_profile": perturbator_audit.get("defense_profile"),
-                    "produced": len(variants),
+                    "produced": int(
+                        perturbator_audit.get("model_variant_count", len(variants))
+                    ),
                     "accepted": len(candidates),
                     "rejected": rejected,
                     "error": error,
@@ -1923,28 +2359,65 @@ def run_for_target(
             state["phase"] = "evaluating_generation"
             state["generation_candidate_count"] = len(generation_candidates)
             write_status(out_dir, state)
-            generation_evals = evaluate_and_record(
-                client=client,
-                objective=objective,
-                candidates=generation_candidates,
-                target_model=target_model,
-                target_temperature=config["target_temperature"],
-                target_max_tokens=config["target_max_tokens"],
-                target_system_prompt=config.get("target_system_prompt") or None,
-                judge_models=config.get("judge_models", []),
-                judge_temperature=config["judge_temperature"],
-                judge_max_tokens=config["judge_max_tokens"],
-                judge_parallelism=config["judge_parallelism"],
-                judge_disagreement_threshold=config["judge_disagreement_threshold"],
-                objective_config=config.get("objective_config", {}),
-                template_config=template_config,
-                parallelism=config["parallelism"],
-                archive=archive,
-                affordances=affordances,
-                affordances_path=affordances_path,
-                events_path=events_path,
-                state=state,
-            )
+            parent_evaluations = {
+                str(parent.get("candidate_id", "")): parent
+                for parent in parents
+            }
+            controls = [
+                candidate
+                for candidate in generation_candidates
+                if candidate.metadata.get("evaluation_role") == "control"
+            ]
+            search_candidates = [
+                candidate
+                for candidate in generation_candidates
+                if candidate.metadata.get("evaluation_role") != "control"
+            ]
+            for batch, batch_parallelism in (
+                (controls, 1),
+                (search_candidates, config["parallelism"]),
+            ):
+                if not batch:
+                    continue
+                generation_evals.extend(
+                    evaluate_and_record(
+                        client=client,
+                        objective=objective,
+                        candidates=batch,
+                        target_model=target_model,
+                        target_temperature=config["target_temperature"],
+                        target_max_tokens=config["target_max_tokens"],
+                        target_system_prompt=config.get("target_system_prompt") or None,
+                        judge_models=config.get("judge_models", []),
+                        judge_temperature=config["judge_temperature"],
+                        judge_max_tokens=config["judge_max_tokens"],
+                        judge_parallelism=config["judge_parallelism"],
+                        judge_disagreement_threshold=config[
+                            "judge_disagreement_threshold"
+                        ],
+                        objective_config=config.get("objective_config", {}),
+                        template_config=template_config,
+                        parallelism=batch_parallelism,
+                        archive=archive,
+                        affordances=affordances,
+                        affordances_path=affordances_path,
+                        events_path=events_path,
+                        state=state,
+                        parent_evaluations=parent_evaluations,
+                        comparison_max_component_drop=float(
+                            config.get("perturbation_max_component_drop", 5.0)
+                        ),
+                        judge_parse_retries=int(
+                            config.get("judge_parse_retries", 1)
+                        ),
+                        paired_rejudge_enabled=bool(
+                            config.get("paired_rejudge_enabled")
+                        ),
+                        paired_rejudge_drop_threshold=float(
+                            config.get("paired_rejudge_drop_threshold", 30.0)
+                        ),
+                    )
+                )
         search_stats.complete_generation(
             generation=generation,
             scheduled_candidates=scheduled_candidates,
@@ -1982,6 +2455,34 @@ def run_for_target(
             state["parent_plan_memory_active"] = len(
                 outcome_memory.active_entries(generation + 1)
             )
+        operator_records = operator_ledger.record(
+            parents={
+                str(parent.get("candidate_id", "")): parent
+                for parent in parents
+            },
+            evaluations=generation_evals,
+        )
+        for operator_record in operator_records:
+            append_jsonl(
+                operator_outcomes_path,
+                {
+                    "timestamp": utc_now(),
+                    "objective_id": objective.OBJECTIVE_ID,
+                    "target_model": target_model,
+                    "generation": generation,
+                    **operator_record,
+                },
+            )
+        state["operator_outcome_records"] = int(
+            state.get("operator_outcome_records", 0)
+        ) + len(operator_records)
+        state["operator_outcome_blocked"] = sum(
+            1
+            for item in operator_ledger.to_jsonable()["entries"]
+            if int(item["outcome"].get("regressed", 0))
+            >= operator_ledger.block_after_regressions
+            and int(item["outcome"].get("improved", 0)) == 0
+        )
         state["archive_cells"] = len(archive.cells)
         write_status(out_dir, state)
 
@@ -2031,6 +2532,7 @@ def run_for_target(
         "search_metrics": search_statistics["overall"],
         "search_top_parent_cells": search_statistics["top_parent_cells"],
         "search_bottom_parent_cells": search_statistics["bottom_parent_cells"],
+        "search_by_operator": search_statistics.get("by_operator", {}),
         "execution_metrics": {
             "completion_state": "completed",
             "target_error_count": int(state.get("target_error_count", 0)),
@@ -2058,6 +2560,9 @@ def run_for_target(
             "perturbator_fallback_count": int(state.get("perturbator_fallback_count", 0)),
             "target_retry_count": int(state.get("target_retry_count", 0)),
             "judge_retry_count": int(state.get("judge_retry_count", 0)),
+            "judge_parse_retry_count": int(
+                state.get("judge_parse_retry_count", 0)
+            ),
             "perturbator_retry_count": int(state.get("perturbator_retry_count", 0)),
             "seed_candidate_count": int(state.get("seed_candidate_count", 0)),
             "seed_candidates_truncated": int(state.get("seed_candidates_truncated", 0)),
@@ -2069,6 +2574,15 @@ def run_for_target(
             ),
             "parent_plan_memory_regressions": int(
                 state.get("parent_plan_memory_regressions", 0)
+            ),
+            "operator_outcome_records": int(
+                state.get("operator_outcome_records", 0)
+            ),
+            "operator_outcome_blocked": int(
+                state.get("operator_outcome_blocked", 0)
+            ),
+            "paired_rejudge_count": int(
+                state.get("paired_rejudge_count", 0)
             ),
             "search_attempts_started": int(
                 state.get("search_attempts_started", 0)

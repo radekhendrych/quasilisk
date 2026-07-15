@@ -64,6 +64,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "parent_plan_cooldown_generations": 2,
     "parent_plan_penalty": 15.0,
     "parent_plan_min_evaluated_children": 1,
+    "perturbation_architecture_version": 2,
+    "perturbation_trust_total_threshold": 60.0,
+    "perturbation_trust_raw_threshold": 80.0,
+    "perturbation_trust_min_similarity": 0.8,
+    "perturbation_max_component_drop": 5.0,
+    "perturbation_replay_control_enabled": False,
+    "operator_outcome_memory_enabled": True,
+    "operator_block_after_regressions": 1,
+    "judge_parse_retries": 1,
+    "paired_rejudge_enabled": False,
+    "paired_rejudge_drop_threshold": 30.0,
     "fail_fast": False,
     "force_out_dir": False,
     "resume": False,
@@ -163,6 +174,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parent-plan-cooldown-generations", type=int)
     parser.add_argument("--parent-plan-penalty", type=float)
     parser.add_argument("--parent-plan-min-evaluated-children", type=int)
+    parser.add_argument(
+        "--perturbation-architecture-version",
+        type=int,
+        choices=(1, 2),
+    )
+    parser.add_argument("--perturbation-trust-total-threshold", type=float)
+    parser.add_argument("--perturbation-trust-raw-threshold", type=float)
+    parser.add_argument("--perturbation-trust-min-similarity", type=float)
+    parser.add_argument("--perturbation-max-component-drop", type=float)
+    parser.add_argument(
+        "--perturbation-replay-control-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--operator-outcome-memory-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--operator-block-after-regressions", type=int)
+    parser.add_argument("--judge-parse-retries", type=int)
+    parser.add_argument(
+        "--paired-rejudge-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--paired-rejudge-drop-threshold", type=float)
     parser.add_argument(
         "--fail-fast",
         action=argparse.BooleanOptionalAction,
@@ -289,6 +327,9 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "max_successful_seeds_per_model",
         "parent_plan_cooldown_generations",
         "parent_plan_min_evaluated_children",
+        "perturbation_architecture_version",
+        "operator_block_after_regressions",
+        "judge_parse_retries",
     )
     for field in int_fields:
         config[field] = int(config[field])
@@ -302,6 +343,11 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "successful_seed_score",
         "parent_plan_regression_threshold",
         "parent_plan_penalty",
+        "perturbation_trust_total_threshold",
+        "perturbation_trust_raw_threshold",
+        "perturbation_trust_min_similarity",
+        "perturbation_max_component_drop",
+        "paired_rejudge_drop_threshold",
     )
     for field in float_fields:
         config[field] = float(config[field])
@@ -358,6 +404,18 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("parent_plan_regression_threshold must be >= 0")
     if config["parent_plan_penalty"] < 0:
         raise SystemExit("parent_plan_penalty must be >= 0")
+    if config["perturbation_architecture_version"] not in {1, 2}:
+        raise SystemExit("perturbation_architecture_version must be 1 or 2")
+    if not 0 <= config["perturbation_trust_min_similarity"] <= 1:
+        raise SystemExit("perturbation_trust_min_similarity must be between 0 and 1")
+    if config["perturbation_max_component_drop"] < 0:
+        raise SystemExit("perturbation_max_component_drop must be >= 0")
+    if config["operator_block_after_regressions"] <= 0:
+        raise SystemExit("operator_block_after_regressions must be > 0")
+    if config["judge_parse_retries"] < 0:
+        raise SystemExit("judge_parse_retries must be >= 0")
+    if config["paired_rejudge_drop_threshold"] < 0:
+        raise SystemExit("paired_rejudge_drop_threshold must be >= 0")
     if config.get("parent_plan_memory_mode") not in {"block", "penalize"}:
         raise SystemExit("parent_plan_memory_mode must be 'block' or 'penalize'")
     if not isinstance(config.get("objective_config"), dict):
@@ -387,6 +445,13 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
             f"Objective {objective.OBJECTIVE_ID!r} does not support multiple judges"
         )
     config["parent_plan_memory_enabled"] = bool(config.get("parent_plan_memory_enabled"))
+    config["operator_outcome_memory_enabled"] = bool(
+        config.get("operator_outcome_memory_enabled")
+    )
+    config["perturbation_replay_control_enabled"] = bool(
+        config.get("perturbation_replay_control_enabled")
+    )
+    config["paired_rejudge_enabled"] = bool(config.get("paired_rejudge_enabled"))
     config["fail_fast"] = bool(config.get("fail_fast"))
     config["force_out_dir"] = bool(config.get("force_out_dir"))
     config["resume"] = bool(config.get("resume"))
@@ -411,6 +476,7 @@ RUN_ARTIFACT_NAMES = {
     "run_summary.json",
     "status.json",
     "summary.md",
+    "operator_outcomes.jsonl",
 }
 
 

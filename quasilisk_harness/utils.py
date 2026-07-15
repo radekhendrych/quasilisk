@@ -124,7 +124,11 @@ def extract_variants(text: str) -> list[dict[str, str]]:
             prompt = str(item.get("prompt") or item.get("text") or "").strip()
             mutation = str(item.get("mutation") or item.get("rationale") or "").strip()
             if prompt:
-                variants.append({"prompt": prompt, "mutation": mutation})
+                variant = {"prompt": prompt, "mutation": mutation}
+                task_id = str(item.get("task_id") or "").strip()
+                if task_id:
+                    variant["task_id"] = task_id
+                variants.append(variant)
     return variants
 
 

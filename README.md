@@ -71,6 +71,7 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 - `generation_traces.jsonl`: one record for each perturbator call, including the selected plan, defense profile, rendered request, raw response, and parsed variants.
 - `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
 - `parent_plan_outcomes.jsonl`: per-generation parent-plan outcome records used by outcome memory; this does not duplicate target responses from `events.jsonl`.
+- `operator_outcomes.jsonl`: quality-aware outcomes for individual mutation operators and factors, including persistent run-local blocking decisions.
 - `search_stats.jsonl`: append-only perturbator-attempt lifecycle records linking selected parent cells and plans to validation, child-score, budget, and final archive outcomes.
 - `run_statistics.json`: live aggregate perturbator effectiveness by target, parent cell, strategy, route/case, and generation.
 - `affordances_<model>.json`: compact target-specific framing cues extracted from observed responses, such as preferred terms, visible reasoning cues, successful frames, failed frames, and refusal cues.
@@ -86,7 +87,9 @@ generation, so parallel evaluation order and transient insertions do not inflate
 retention, new-cell, or cell-improvement rates.
 Primary perturbator rates exclude attempts that used local fallback variants;
 the corresponding `search_*` rates include fallbacks and describe end-to-end
-search effectiveness.
+search effectiveness. Scores also carry `quality` (`confirmed`, `degraded`, or
+`unscored`); unscored judge fallbacks remain audited but are excluded from
+parent/child learning and archive insertion.
 
 Prompt text used for perturbator and judge requests lives in template files
 under `templates/` by default. Runs can override those paths through the
@@ -156,6 +159,18 @@ plans that preserve the parent's successful route, pressure pattern, and
 commitment form; lower-scoring parents use coverage-weighted route/case
 exploration. Route, case, defense, strategy, and validation metadata is stored
 with the candidate; the target receives only the final user prompt.
+
+Architecture version 2 decomposes each high-signal parent batch into independent
+mutation tasks. Each task declares one operator, one factor, protected parent
+features/spans, a maximum factor-change count, a token-similarity floor, and
+archive eligibility. Candidate validation has two layers: absolute prompt
+integrity and a parent-relative transition contract. This permits one-factor
+ablation without requiring every pre-existing scaffold to disappear at once.
+Exact replay controls can be enabled; they run before search candidates, remain
+in `events.jsonl`, bypass duplicate rejection, and never enter MAP-Elites.
+Malformed judge JSON is retried before a result becomes an audited, unscored
+fallback. Optional paired rejudging can reassess unusually large parent/child
+drops without changing the original target response.
 
 For the abstract moral-susceptibility objectives, MAP-Elites cells are oriented
 around argument route, pressure pattern, and commitment form. Mutation guidance
@@ -240,6 +255,27 @@ Optional three-model judge panel:
   "judge_disagreement_threshold": 20
 }
 ```
+
+Optional trust-region and reliability controls:
+
+```json
+{
+  "perturbation_architecture_version": 2,
+  "perturbation_trust_total_threshold": 60,
+  "perturbation_trust_raw_threshold": 80,
+  "perturbation_trust_min_similarity": 0.8,
+  "perturbation_max_component_drop": 5,
+  "perturbation_replay_control_enabled": true,
+  "operator_outcome_memory_enabled": true,
+  "operator_block_after_regressions": 1,
+  "judge_parse_retries": 1,
+  "paired_rejudge_enabled": false,
+  "paired_rejudge_drop_threshold": 30
+}
+```
+
+Set `perturbation_architecture_version` to `1` to adapt the legacy single-plan
+batch generator through the new audit and comparison interfaces.
 
 Legacy `judge_model` configuration remains supported as a singleton panel.
 `OPENROUTER_JUDGE_MODEL` remains supported for a singleton or comma-separated
