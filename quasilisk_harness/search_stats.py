@@ -185,6 +185,14 @@ class SearchStatsTracker:
                     "unscored": 0,
                 }
             )
+            improvement_goal = {
+                "evaluated": 0,
+                "comparable": 0,
+                "improved": 0,
+                "retained": 0,
+                "regressed": 0,
+                "unscored": 0,
+            }
             for evaluation in child_evaluations:
                 metadata = evaluation.get("metadata")
                 comparison = (
@@ -194,12 +202,17 @@ class SearchStatsTracker:
                 )
                 candidate_id = str(evaluation.get("candidate_id", ""))
                 task = task_by_candidate.get(candidate_id, {})
-                operator_id = str(task.get("operator_id") or "legacy_unspecified")
+                operator_id = str(task.get("operator_id") or "unspecified_task")
                 role = str(task.get("evaluation_role") or "search")
+                counts_toward_goal = bool(
+                    task.get("counts_toward_improvement_goal")
+                )
                 if role == "control":
                     operator_id = "replay_control"
                 aggregate = operator_outcomes[operator_id]
                 aggregate["evaluated"] += 1
+                if counts_toward_goal:
+                    improvement_goal["evaluated"] += 1
                 if isinstance(comparison, dict):
                     comparison_records.append(comparison)
                     classification = str(
@@ -207,17 +220,31 @@ class SearchStatsTracker:
                     )
                     if comparison.get("comparable"):
                         aggregate["comparable"] += 1
+                        if counts_toward_goal:
+                            improvement_goal["comparable"] += 1
                     aggregate[classification] = int(
                         aggregate.get(classification, 0)
                     ) + 1
+                    if counts_toward_goal:
+                        improvement_goal[classification] = int(
+                            improvement_goal.get(classification, 0)
+                        ) + 1
                 else:
                     aggregate["comparable"] += 1
+                    if counts_toward_goal:
+                        improvement_goal["comparable"] += 1
                     if _score_total(evaluation) > parent_score:
                         aggregate["improved"] += 1
+                        if counts_toward_goal:
+                            improvement_goal["improved"] += 1
                     elif _score_total(evaluation) == parent_score:
                         aggregate["retained"] += 1
+                        if counts_toward_goal:
+                            improvement_goal["retained"] += 1
                     else:
                         aggregate["regressed"] += 1
+                        if counts_toward_goal:
+                            improvement_goal["regressed"] += 1
             comparable = [
                 item for item in comparison_records if item.get("comparable")
             ]
@@ -271,6 +298,12 @@ class SearchStatsTracker:
                     if comparison_records
                     else sum(1 for delta in deltas if delta < 0)
                 ),
+                "improvement_goal_children": improvement_goal["evaluated"],
+                "improvement_goal_comparable_children": improvement_goal["comparable"],
+                "improvement_goal_improved_children": improvement_goal["improved"],
+                "improvement_goal_retained_children": improvement_goal["retained"],
+                "improvement_goal_regressed_children": improvement_goal["regressed"],
+                "improvement_goal_unscored_children": improvement_goal["unscored"],
                 "final_archive_retained": sum(
                     1
                     for evaluation in successful
@@ -397,6 +430,13 @@ class SearchStatsTracker:
             "search_attempts_completed": summary["attempts_completed"],
             "perturbator_validity_rate": overall["validity_rate"],
             "perturbator_improvement_rate": overall["improvement_rate"],
+            "perturbator_improvement_goal_rate": overall["improvement_goal_rate"],
+            "perturbator_improvement_goal_retention_rate": overall[
+                "improvement_goal_retention_rate"
+            ],
+            "perturbator_improvement_goal_regression_rate": overall[
+                "improvement_goal_regression_rate"
+            ],
             "perturbator_retention_rate": overall["retention_rate"],
             "perturbator_regression_rate": overall["regression_rate"],
             "perturbator_unscored_rate": overall["unscored_rate"],
@@ -569,6 +609,30 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     unscored = sum(
         int(item["outcome"].get("unscored_children", 0)) for item in records
     )
+    goal_evaluated = sum(
+        int(item["outcome"].get("improvement_goal_children", 0))
+        for item in records
+    )
+    goal_comparable = sum(
+        int(item["outcome"].get("improvement_goal_comparable_children", 0))
+        for item in records
+    )
+    goal_improved = sum(
+        int(item["outcome"].get("improvement_goal_improved_children", 0))
+        for item in records
+    )
+    goal_retained = sum(
+        int(item["outcome"].get("improvement_goal_retained_children", 0))
+        for item in records
+    )
+    goal_regressed = sum(
+        int(item["outcome"].get("improvement_goal_regressed_children", 0))
+        for item in records
+    )
+    goal_unscored = sum(
+        int(item["outcome"].get("improvement_goal_unscored_children", 0))
+        for item in records
+    )
     retained = sum(
         int(item["outcome"].get("final_archive_retained", 0)) for item in records
     )
@@ -649,6 +713,30 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         int(item["outcome"].get("unscored_children", 0))
         for item in model_records
     )
+    model_goal_evaluated = sum(
+        int(item["outcome"].get("improvement_goal_children", 0))
+        for item in model_records
+    )
+    model_goal_comparable = sum(
+        int(item["outcome"].get("improvement_goal_comparable_children", 0))
+        for item in model_records
+    )
+    model_goal_improved = sum(
+        int(item["outcome"].get("improvement_goal_improved_children", 0))
+        for item in model_records
+    )
+    model_goal_retained = sum(
+        int(item["outcome"].get("improvement_goal_retained_children", 0))
+        for item in model_records
+    )
+    model_goal_regressed = sum(
+        int(item["outcome"].get("improvement_goal_regressed_children", 0))
+        for item in model_records
+    )
+    model_goal_unscored = sum(
+        int(item["outcome"].get("improvement_goal_unscored_children", 0))
+        for item in model_records
+    )
     model_retained = sum(
         int(item["outcome"].get("final_archive_retained", 0))
         for item in model_records
@@ -692,6 +780,12 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "retained_children": retained_comparisons,
         "regressed_children": regressed_comparisons,
         "unscored_children": unscored,
+        "improvement_goal_children": goal_evaluated,
+        "improvement_goal_comparable_children": goal_comparable,
+        "improvement_goal_improved_children": goal_improved,
+        "improvement_goal_retained_children": goal_retained,
+        "improvement_goal_regressed_children": goal_regressed,
+        "improvement_goal_unscored_children": goal_unscored,
         "final_archive_retained": retained,
         "new_cells_created": new_cells,
         "distinct_parent_count": len(
@@ -717,6 +811,22 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "validity_rate": _ratio(model_accepted, model_produced),
         "evaluation_yield": _ratio(model_non_error, model_evaluated),
         "improvement_rate": _ratio(model_improved, model_comparable),
+        "improvement_goal_rate": _ratio(
+            model_goal_improved,
+            model_goal_comparable,
+        ),
+        "improvement_goal_retention_rate": _ratio(
+            model_goal_improved + model_goal_retained,
+            model_goal_comparable,
+        ),
+        "improvement_goal_regression_rate": _ratio(
+            model_goal_regressed,
+            model_goal_comparable,
+        ),
+        "improvement_goal_unscored_rate": _ratio(
+            model_goal_unscored,
+            model_goal_evaluated,
+        ),
         "retention_rate": _ratio(
             model_improved + model_retained_comparisons,
             model_comparable,
@@ -744,6 +854,19 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             attempts,
         ),
         "search_improvement_rate": _ratio(improved, comparable),
+        "search_improvement_goal_rate": _ratio(goal_improved, goal_comparable),
+        "search_improvement_goal_retention_rate": _ratio(
+            goal_improved + goal_retained,
+            goal_comparable,
+        ),
+        "search_improvement_goal_regression_rate": _ratio(
+            goal_regressed,
+            goal_comparable,
+        ),
+        "search_improvement_goal_unscored_rate": _ratio(
+            goal_unscored,
+            goal_evaluated,
+        ),
         "search_retention_rate": _ratio(
             improved + retained_comparisons,
             comparable,

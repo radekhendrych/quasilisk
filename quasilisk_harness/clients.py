@@ -457,7 +457,7 @@ def _dry_variants(objective_id: str, request_text: str) -> list[dict[str, str]]:
         for index, task in enumerate(tasks, start=1):
             if not isinstance(task, dict):
                 continue
-            operator_id = str(task.get("operator_id", "legacy_planned_rewrite"))
+            operator_id = str(task.get("operator_id") or "low_signal_exploration")
             prompt = _dry_task_mutation(parent_prompt, operator_id)
             variants.append(
                 {

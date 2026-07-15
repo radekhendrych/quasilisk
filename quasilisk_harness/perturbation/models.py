@@ -136,6 +136,9 @@ class MutationTask:
     rationale: str
     plan: PerturbationPlan
     evaluation_role: str = "search"
+    parent_relative: bool = True
+    clean_ablation_candidate: bool = True
+    counts_toward_improvement_goal: bool = True
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -148,20 +151,55 @@ class MutationTask:
             "rationale": self.rationale,
             "plan": self.plan.to_jsonable(),
             "evaluation_role": self.evaluation_role,
+            "parent_relative": self.parent_relative,
+            "clean_ablation_candidate": self.clean_ablation_candidate,
+            "counts_toward_improvement_goal": self.counts_toward_improvement_goal,
         }
 
     @classmethod
     def from_jsonable(cls, data: dict[str, Any]) -> "MutationTask":
+        raw_operator_id = str(data.get("operator_id") or "historical_unknown_task")
+        operator_id = (
+            "historical_legacy_rewrite"
+            if raw_operator_id == "legacy_planned_rewrite"
+            else raw_operator_id
+        )
+        historical = operator_id.startswith("historical_")
+        broad_exploration = operator_id in {
+            "coverage_exploration",
+            "low_signal_exploration",
+            "historical_legacy_rewrite",
+            "historical_unknown_task",
+        }
+        parent_relative = bool(
+            data.get("parent_relative", not broad_exploration)
+        )
+        clean_ablation = bool(
+            data.get(
+                "clean_ablation_candidate",
+                parent_relative and not broad_exploration,
+            )
+        )
         return cls(
             task_id=str(data.get("task_id", "")),
             parent_candidate_id=str(data.get("parent_candidate_id", "")),
-            mode=str(data.get("mode", "explore")),
-            operator_id=str(data.get("operator_id", "legacy_planned_rewrite")),
-            factor=str(data.get("factor", "legacy_unspecified")),
+            mode=str(data.get("mode", "historical" if historical else "explore")),
+            operator_id=operator_id,
+            factor=str(
+                data.get(
+                    "factor",
+                    "historical_unspecified" if historical else "unspecified",
+                )
+            ),
             contract=MutationContract.from_jsonable(dict(data.get("contract") or {})),
             rationale=str(data.get("rationale", "")),
             plan=PerturbationPlan.from_jsonable(dict(data.get("plan") or {})),
             evaluation_role=str(data.get("evaluation_role", "search")),
+            parent_relative=parent_relative,
+            clean_ablation_candidate=clean_ablation,
+            counts_toward_improvement_goal=bool(
+                data.get("counts_toward_improvement_goal", clean_ablation)
+            ),
         )
 
 

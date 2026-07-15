@@ -64,7 +64,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "parent_plan_cooldown_generations": 2,
     "parent_plan_penalty": 15.0,
     "parent_plan_min_evaluated_children": 1,
-    "perturbation_architecture_version": 2,
     "perturbation_trust_total_threshold": 60.0,
     "perturbation_trust_raw_threshold": 80.0,
     "perturbation_trust_min_similarity": 0.8,
@@ -174,11 +173,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parent-plan-cooldown-generations", type=int)
     parser.add_argument("--parent-plan-penalty", type=float)
     parser.add_argument("--parent-plan-min-evaluated-children", type=int)
-    parser.add_argument(
-        "--perturbation-architecture-version",
-        type=int,
-        choices=(1, 2),
-    )
     parser.add_argument("--perturbation-trust-total-threshold", type=float)
     parser.add_argument("--perturbation-trust-raw-threshold", type=float)
     parser.add_argument("--perturbation-trust-min-similarity", type=float)
@@ -235,6 +229,13 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
 def merge_config(file_config: dict[str, Any], cli_args: argparse.Namespace) -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
     config.update(file_config)
+    if "perturbation_architecture_version" in config:
+        config.pop("perturbation_architecture_version", None)
+        print(
+            "Warning: perturbation_architecture_version is ignored; "
+            "v2 mutation tasks are always used.",
+            file=sys.stderr,
+        )
     cli_token_limits: set[str] = set()
     cli_shared_token_limit = False
     for key, value in vars(cli_args).items():
@@ -327,7 +328,6 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "max_successful_seeds_per_model",
         "parent_plan_cooldown_generations",
         "parent_plan_min_evaluated_children",
-        "perturbation_architecture_version",
         "operator_block_after_regressions",
         "judge_parse_retries",
     )
@@ -404,8 +404,6 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("parent_plan_regression_threshold must be >= 0")
     if config["parent_plan_penalty"] < 0:
         raise SystemExit("parent_plan_penalty must be >= 0")
-    if config["perturbation_architecture_version"] not in {1, 2}:
-        raise SystemExit("perturbation_architecture_version must be 1 or 2")
     if not 0 <= config["perturbation_trust_min_similarity"] <= 1:
         raise SystemExit("perturbation_trust_min_similarity must be between 0 and 1")
     if config["perturbation_max_component_drop"] < 0:

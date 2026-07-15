@@ -160,17 +160,20 @@ commitment form; lower-scoring parents use coverage-weighted route/case
 exploration. Route, case, defense, strategy, and validation metadata is stored
 with the candidate; the target receives only the final user prompt.
 
-Architecture version 2 decomposes each high-signal parent batch into independent
-mutation tasks. Each task declares one operator, one factor, protected parent
-features/spans, a maximum factor-change count, a token-similarity floor, and
-archive eligibility. Candidate validation has two layers: absolute prompt
-integrity and a parent-relative transition contract. This permits one-factor
-ablation without requiring every pre-existing scaffold to disappear at once.
-Exact replay controls can be enabled; they run before search candidates, remain
-in `events.jsonl`, bypass duplicate rejection, and never enter MAP-Elites.
-Malformed judge JSON is retried before a result becomes an audited, unscored
-fallback. Optional paired rejudging can reassess unusually large parent/child
-drops without changing the original target response.
+Planned perturbation uses independent mutation tasks. Each task declares one
+operator, one factor, protected parent features/spans, a maximum factor-change
+count, a token-similarity floor, archive eligibility, and whether it counts
+toward the clean perturbator-improvement goal. Candidate validation has two
+layers: absolute prompt integrity and a parent-relative transition contract.
+This permits one-factor ablation without requiring every pre-existing scaffold
+to disappear at once. Broad low-signal and coverage exploration remain available
+as explicit v2 exploration operators, but they are separated from clean
+parent-relative perturbation metrics. Exact replay controls can be enabled; they
+run before search candidates, remain in `events.jsonl`, bypass duplicate
+rejection, and never enter MAP-Elites. Malformed judge JSON is retried before a
+result becomes an audited, unscored fallback. Optional paired rejudging can
+reassess unusually large parent/child drops without changing the original target
+response.
 
 For the abstract moral-susceptibility objectives, MAP-Elites cells are oriented
 around argument route, pressure pattern, and commitment form. Mutation guidance
@@ -260,7 +263,6 @@ Optional trust-region and reliability controls:
 
 ```json
 {
-  "perturbation_architecture_version": 2,
   "perturbation_trust_total_threshold": 60,
   "perturbation_trust_raw_threshold": 80,
   "perturbation_trust_min_similarity": 0.8,
@@ -273,9 +275,6 @@ Optional trust-region and reliability controls:
   "paired_rejudge_drop_threshold": 30
 }
 ```
-
-Set `perturbation_architecture_version` to `1` to adapt the legacy single-plan
-batch generator through the new audit and comparison interfaces.
 
 Legacy `judge_model` configuration remains supported as a singleton panel.
 `OPENROUTER_JUDGE_MODEL` remains supported for a singleton or comma-separated

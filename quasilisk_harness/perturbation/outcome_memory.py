@@ -159,16 +159,6 @@ class ParentPlanOutcomeMemory:
                 and metadata.get("evaluation_role") == "control"
             ):
                 continue
-            mutation_task = (
-                metadata.get("mutation_task")
-                if isinstance(metadata, dict)
-                else None
-            )
-            if (
-                isinstance(mutation_task, dict)
-                and mutation_task.get("operator_id") != "legacy_planned_rewrite"
-            ):
-                continue
             plan_data = (
                 metadata.get("perturbation_plan")
                 if isinstance(metadata, dict)

@@ -921,20 +921,14 @@ def build_planned_perturbation_request(
         }
         for item in archive_context[:8]
     ]
-    contracted_v2 = any(
-        task.operator_id != "legacy_planned_rewrite"
-        for task in (mutation_tasks or ())
-    )
+    task_backed_request = bool(mutation_tasks)
     payload = {
         "objective_id": _safe_objective_id_for_prompting(objective_id),
         "objective": _sanitize_text_for_prompting(objective_id, objective_text),
         "parent_prompt": (
             str(parent_eval["prompt"])
-            if contracted_v2
-            else _sanitize_text_for_prompting(
-                objective_id,
-                parent_eval["prompt"],
-            )
+            if task_backed_request
+            else _sanitize_text_for_prompting(objective_id, parent_eval["prompt"])
         ),
         "parent_score": _sanitize_for_perturbator_context(
             objective_id,
@@ -1339,10 +1333,6 @@ def prepare_candidates(
             if isinstance(task_data, dict)
             else None
         )
-        is_legacy_task = (
-            task is not None
-            and task.operator_id == "legacy_planned_rewrite"
-        )
         is_control = task is not None and task.evaluation_role == "control"
         prompt = (
             str(variant["prompt"]).strip()
@@ -1356,7 +1346,7 @@ def prepare_candidates(
         plan_data = variant.get("perturbation_plan")
         if valid and isinstance(plan_data, dict):
             plan = PerturbationPlan.from_jsonable(plan_data)
-            if task is None or is_legacy_task:
+            if task is None:
                 validation_result = validate_planned_prompt(
                     prompt=prompt,
                     objective=objective,
@@ -1372,8 +1362,9 @@ def prepare_candidates(
             if not validation_result.accepted:
                 valid = False
                 reason = "planned_validation:" + ",".join(validation_result.reasons)
-                can_repair_directness = task is None or is_legacy_task or (
-                    "direct_adjudication" in task.contract.allowed_factors
+                can_repair_directness = task is None or (
+                    "*" in task.contract.allowed_factors
+                    or "direct_adjudication" in task.contract.allowed_factors
                 )
                 if _only_missing_direct_adjudication(validation) and can_repair_directness:
                     original_prompt = prompt
@@ -1383,7 +1374,7 @@ def prepare_candidates(
                         objective,
                     )
                     if repaired_valid:
-                        if task is None or is_legacy_task:
+                        if task is None:
                             repaired_result = validate_planned_prompt(
                                 prompt=repaired_prompt,
                                 objective=objective,
@@ -1411,9 +1402,12 @@ def prepare_candidates(
                             )
                     else:
                         reason = repaired_reason
-            if valid and task is not None and not is_legacy_task:
+            if valid and task is not None:
                 parent_fingerprint_data = variant.get("parent_fingerprint")
-                if isinstance(parent_fingerprint_data, dict):
+                if not isinstance(parent_fingerprint_data, dict):
+                    valid = False
+                    reason = "transition_validation:missing_parent_fingerprint"
+                else:
                     parent_fingerprint = build_prompt_fingerprint(
                         objective=objective,
                         prompt=str(parent_eval.get("prompt", "")),
@@ -1476,6 +1470,11 @@ def prepare_candidates(
         if task is not None:
             metadata["evaluation_role"] = task.evaluation_role
             metadata["archive_eligible"] = task.contract.archive_eligible
+            metadata["parent_relative"] = task.parent_relative
+            metadata["clean_ablation_candidate"] = task.clean_ablation_candidate
+            metadata["counts_toward_improvement_goal"] = (
+                task.counts_toward_improvement_goal
+            )
         candidates.append(
             Candidate(
                 id=make_candidate_id(
@@ -2151,6 +2150,9 @@ def run_for_target(
         "search_attempts_completed": 0,
         "perturbator_validity_rate": 0.0,
         "perturbator_improvement_rate": 0.0,
+        "perturbator_improvement_goal_rate": 0.0,
+        "perturbator_improvement_goal_retention_rate": 0.0,
+        "perturbator_improvement_goal_regression_rate": 0.0,
         "perturbator_retention_rate": 0.0,
         "perturbator_regression_rate": 0.0,
         "perturbator_unscored_rate": 0.0,

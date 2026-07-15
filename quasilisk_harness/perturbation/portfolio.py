@@ -34,6 +34,9 @@ def _task(
     rationale: str,
     plan: PerturbationPlan,
     evaluation_role: str = "search",
+    parent_relative: bool = True,
+    clean_ablation_candidate: bool = True,
+    counts_toward_improvement_goal: bool = True,
 ) -> MutationTask:
     task_id = short_hash(
         f"{parent_id}|{generation}|{index}|{operator_id}|{factor}|{plan.plan_id}",
@@ -49,6 +52,9 @@ def _task(
         rationale=rationale,
         plan=plan,
         evaluation_role=evaluation_role,
+        parent_relative=parent_relative,
+        clean_ablation_candidate=clean_ablation_candidate,
+        counts_toward_improvement_goal=counts_toward_improvement_goal,
     )
 
 
@@ -73,18 +79,19 @@ def _contract(
     )
 
 
-def legacy_tasks(
+def low_signal_exploration_tasks(
     *,
     parent_eval: dict[str, Any],
     plan: PerturbationPlan,
+    fingerprint: PromptFingerprint,
     offspring_count: int,
     generation: int,
 ) -> list[MutationTask]:
     parent_id = str(parent_eval.get("candidate_id", ""))
-    unrestricted = MutationContract(
+    broad_contract = MutationContract(
         allowed_factors=("*",),
         protected_factors=(),
-        protected_spans=(),
+        protected_spans=fingerprint.protected_spans,
         max_factor_changes=100,
         min_token_similarity=0.0,
     )
@@ -94,11 +101,17 @@ def legacy_tasks(
             generation=generation,
             index=index,
             mode="explore",
-            operator_id="legacy_planned_rewrite",
-            factor="legacy_unspecified",
-            contract=unrestricted,
-            rationale="Legacy planned rewrite adapted to the mutation-task interface.",
-            plan=plan,
+            operator_id="low_signal_exploration",
+            factor="low_signal",
+            contract=broad_contract,
+            rationale=(
+                "Explore a new objective-valid route or case because the parent is "
+                "below the perturbation trust threshold."
+            ),
+            plan=dataclasses.replace(plan, mutation_scope="explore:low_signal"),
+            parent_relative=False,
+            clean_ablation_candidate=False,
+            counts_toward_improvement_goal=False,
         )
         for index in range(offspring_count)
     ]
@@ -117,17 +130,6 @@ def build_mutation_tasks(
         objective=objective,
         prompt=str(parent_eval.get("prompt", "")),
     )
-    if int(config.get("perturbation_architecture_version", 2)) < 2:
-        return (
-            legacy_tasks(
-                parent_eval=parent_eval,
-                plan=plan,
-                offspring_count=offspring_count,
-                generation=generation,
-            ),
-            fingerprint,
-        )
-
     score = parent_eval.get("score") or {}
     high_signal = (
         _score_float(score, "total")
@@ -137,9 +139,10 @@ def build_mutation_tasks(
     )
     if not high_signal:
         return (
-            legacy_tasks(
+            low_signal_exploration_tasks(
                 parent_eval=parent_eval,
                 plan=plan,
+                fingerprint=fingerprint,
                 offspring_count=offspring_count,
                 generation=generation,
             ),
@@ -148,7 +151,7 @@ def build_mutation_tasks(
 
     parent_id = str(parent_eval.get("candidate_id", ""))
     similarity = float(config.get("perturbation_trust_min_similarity", 0.8))
-    specs: list[tuple[str, str, str, MutationContract, str, str]] = []
+    specs: list[tuple[str, str, str, MutationContract, str, str, bool, bool, bool]] = []
     if config.get("perturbation_replay_control_enabled"):
         specs.append(
             (
@@ -165,6 +168,9 @@ def build_mutation_tasks(
                 ),
                 "Replay the exact parent prompt to measure target and judge variance.",
                 "control",
+                True,
+                False,
+                False,
             )
         )
 
@@ -191,6 +197,9 @@ def build_mutation_tasks(
                     "preserve every other detected factor and semantic anchor."
                 ),
                 "search",
+                True,
+                True,
+                True,
             )
         )
 
@@ -207,6 +216,9 @@ def build_mutation_tasks(
                 ),
                 "Make one typographic or stylistic micro-edit without changing meaning.",
                 "search",
+                True,
+                True,
+                True,
             ),
             (
                 "exploit",
@@ -220,6 +232,9 @@ def build_mutation_tasks(
                 ),
                 "Change only the requested answer shape or direct-verdict wording.",
                 "search",
+                True,
+                True,
+                True,
             ),
             (
                 "exploit",
@@ -232,6 +247,9 @@ def build_mutation_tasks(
                 ),
                 "Change one concrete case detail while preserving route and conclusion.",
                 "search",
+                True,
+                True,
+                True,
             ),
             (
                 "explore",
@@ -246,14 +264,25 @@ def build_mutation_tasks(
                 ),
                 "Explore one distinct route or case while remaining objective-valid.",
                 "search",
+                False,
+                False,
+                False,
             ),
         )
     )
 
     tasks: list[MutationTask] = []
-    for index, (mode, operator_id, factor, contract, rationale, role) in enumerate(
-        specs
-    ):
+    for index, (
+        mode,
+        operator_id,
+        factor,
+        contract,
+        rationale,
+        role,
+        parent_relative,
+        clean_ablation_candidate,
+        counts_toward_improvement_goal,
+    ) in enumerate(specs):
         tasks.append(
             _task(
                 parent_id=parent_id,
@@ -269,6 +298,9 @@ def build_mutation_tasks(
                     mutation_scope=f"one_factor:{factor}",
                 ),
                 evaluation_role=role,
+                parent_relative=parent_relative,
+                clean_ablation_candidate=clean_ablation_candidate,
+                counts_toward_improvement_goal=counts_toward_improvement_goal,
             )
         )
     return tasks, fingerprint

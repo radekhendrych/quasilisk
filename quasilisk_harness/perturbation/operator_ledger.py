@@ -101,7 +101,7 @@ class OperatorOutcomeLedger:
             if not isinstance(task_data, dict) or not isinstance(fingerprint_data, dict):
                 continue
             task = MutationTask.from_jsonable(task_data)
-            if task.operator_id == "legacy_planned_rewrite":
+            if task.evaluation_role == "control" or not task.counts_toward_improvement_goal:
                 continue
             fingerprint = PromptFingerprint.from_jsonable(fingerprint_data)
             parent = parents.get(str(evaluation.get("parent_id", "")))
@@ -119,7 +119,7 @@ class OperatorOutcomeLedger:
                 evaluation.setdefault("metadata", {})[
                     "parent_child_comparison"
                 ] = comparison.to_jsonable()
-            if not comparison.comparable or task.evaluation_role == "control":
+            if not comparison.comparable:
                 continue
             grouped[self.key_for(task, fingerprint)].append(
                 comparison.to_jsonable()
