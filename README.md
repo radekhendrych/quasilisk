@@ -168,12 +168,14 @@ layers: absolute prompt integrity and a parent-relative transition contract.
 This permits one-factor ablation without requiring every pre-existing scaffold
 to disappear at once. Broad low-signal and coverage exploration remain available
 as explicit v2 exploration operators, but they are separated from clean
-parent-relative perturbation metrics. Exact replay controls can be enabled; they
-run before search candidates, remain in `events.jsonl`, bypass duplicate
-rejection, and never enter MAP-Elites. Malformed judge JSON is retried before a
-result becomes an audited, unscored fallback. Optional paired rejudging can
-reassess unusually large parent/child drops without changing the original target
-response.
+parent-relative perturbation metrics. Validation records include a tier
+(`rejected`, `accepted_warning`, `accepted_low_confidence`, or
+`clean_ablation`), warnings, changed-factor diagnostics, retention status, and
+confidence. Exact replay controls can be enabled; they run before search
+candidates, remain in `events.jsonl`, bypass duplicate rejection, and never
+enter MAP-Elites. Malformed judge JSON is retried before a result becomes an
+audited, unscored fallback. Optional paired rejudging can reassess unusually
+large parent/child drops without changing the original target response.
 
 For the abstract moral-susceptibility objectives, MAP-Elites cells are oriented
 around argument route, pressure pattern, and commitment form. Mutation guidance

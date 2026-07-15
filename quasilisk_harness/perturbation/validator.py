@@ -10,8 +10,10 @@ from quasilisk_harness.objectives.moral_common import (
     contains_philosophical_label,
 )
 from quasilisk_harness.perturbation.fingerprint import changed_factors, token_similarity
+from quasilisk_harness.perturbation.fingerprint import canonical_factor, canonical_factors
 from quasilisk_harness.perturbation.models import (
     MutationContract,
+    MutationTask,
     PerturbationPlan,
     PromptFingerprint,
     ValidationResult,
@@ -68,6 +70,51 @@ PHILOSOPHICAL_OBJECTIVE_IDS = {
     "relativism_susceptibility",
     "fatalism_susceptibility",
 }
+
+INTENDED_FACTOR_SATISFIERS = {
+    "case_detail": ("case_detail", "style_surface"),
+    "direct_adjudication_form": (
+        "direct_adjudication_form",
+        "direct_adjudication",
+        "commitment_form",
+    ),
+}
+
+
+def _result(
+    *,
+    reasons: list[str],
+    rubric: dict[str, float],
+    warnings: list[str] | None = None,
+    diagnostics: dict[str, object] | None = None,
+    tier: str | None = None,
+) -> ValidationResult:
+    warning_list = list(warnings or ())
+    if tier is None:
+        if reasons:
+            tier = "rejected"
+        elif warning_list:
+            tier = "accepted_warning"
+        else:
+            tier = "accepted"
+    return ValidationResult(
+        accepted=not reasons,
+        reasons=reasons,
+        rubric={key: round(value, 3) for key, value in rubric.items()},
+        tier=tier,
+        warnings=warning_list,
+        diagnostics=dict(diagnostics or {}),
+    )
+
+
+def _intended_factor_satisfied(
+    *,
+    intended_factor: str,
+    changed: tuple[str, ...],
+) -> bool:
+    factor = canonical_factor(intended_factor)
+    satisfiers = INTENDED_FACTOR_SATISFIERS.get(factor, (factor,))
+    return bool(set(satisfiers).intersection(changed))
 
 
 def validate_planned_prompt(
@@ -126,18 +173,27 @@ def validate_planned_prompt(
     case_hits = case_keywords_for_objective(plan.objective_id).get(plan.case_family, ())
     route_aligned = any(term in lower for term in route_hits) if route_hits else True
     case_aligned = any(term in lower for term in case_hits) if case_hits else True
+    warnings: list[str] = []
     if route_aligned:
         rubric["plan_alignment"] += 0.5
+    else:
+        warnings.append("route_alignment_not_detected")
     if case_aligned:
         rubric["plan_alignment"] += 0.5
+    else:
+        warnings.append("case_alignment_not_detected")
 
     if word_count(prompt) < 8:
         reasons.append("too_few_words")
 
-    return ValidationResult(
-        accepted=not reasons,
+    return _result(
         reasons=reasons,
-        rubric={key: round(value, 3) for key, value in rubric.items()},
+        rubric=rubric,
+        warnings=[] if reasons else warnings,
+        diagnostics={
+            "route_aligned": route_aligned,
+            "case_aligned": case_aligned,
+        },
     )
 
 
@@ -187,16 +243,25 @@ def validate_absolute_prompt(
     case_hits = case_keywords_for_objective(plan.objective_id).get(plan.case_family, ())
     route_aligned = any(term in lower for term in route_hits) if route_hits else True
     case_aligned = any(term in lower for term in case_hits) if case_hits else True
+    warnings: list[str] = []
     if route_aligned:
         rubric["plan_alignment"] += 0.5
+    else:
+        warnings.append("route_alignment_not_detected")
     if case_aligned:
         rubric["plan_alignment"] += 0.5
+    else:
+        warnings.append("case_alignment_not_detected")
     if word_count(prompt) < 8:
         reasons.append("too_few_words")
-    return ValidationResult(
-        accepted=not reasons,
+    return _result(
         reasons=reasons,
-        rubric={key: round(value, 3) for key, value in rubric.items()},
+        rubric=rubric,
+        warnings=[] if reasons else warnings,
+        diagnostics={
+            "route_aligned": route_aligned,
+            "case_aligned": case_aligned,
+        },
     )
 
 
@@ -205,14 +270,21 @@ def validate_transition(
     parent: PromptFingerprint,
     child: PromptFingerprint,
     contract: MutationContract,
+    task: MutationTask | None = None,
 ) -> ValidationResult:
     """Validate a mutation against its explicit parent-relative contract."""
 
     reasons: list[str] = []
+    warnings: list[str] = []
     similarity = token_similarity(parent, child)
     changes = changed_factors(parent, child)
-    allowed = set(contract.allowed_factors)
-    protected = set(contract.protected_factors)
+    allowed = set(canonical_factors(contract.allowed_factors))
+    protected = set(canonical_factors(contract.protected_factors))
+    intended_factor = canonical_factor(task.factor) if task is not None else ""
+    is_control = task is not None and task.evaluation_role == "control"
+    parent_relative = task.parent_relative if task is not None else True
+    clean_ablation = task.clean_ablation_candidate if task is not None else False
+    broad_allowed = "*" in allowed
     if similarity < contract.min_token_similarity:
         reasons.append(
             f"similarity_below_minimum:{similarity:.4f}<{contract.min_token_similarity:.4f}"
@@ -224,19 +296,67 @@ def validate_transition(
     for factor in changes:
         if factor in protected:
             reasons.append(f"protected_factor_changed:{factor}")
-        if "*" not in allowed and factor not in allowed:
+        if not broad_allowed and factor not in allowed:
             reasons.append(f"undeclared_factor_changed:{factor}")
+    intended_factor_changed = (
+        True
+        if not clean_ablation or is_control
+        else _intended_factor_satisfied(
+            intended_factor=intended_factor,
+            changed=changes,
+        )
+    )
+    if clean_ablation and not is_control and not intended_factor_changed:
+        reasons.append(f"intended_factor_unchanged:{intended_factor}")
     child_lower = " ".join(child.normalized_tokens)
+    missing_spans: list[str] = []
     for span in contract.protected_spans:
         normalized_span = " ".join(re.findall(r"[\w'-]+", span.lower()))
         if normalized_span and normalized_span not in child_lower:
+            missing_spans.append(span)
             reasons.append(f"protected_span_missing:{span}")
-    return ValidationResult(
-        accepted=not reasons,
+    if not parent_relative:
+        warnings.append("not_parent_relative")
+    if not clean_ablation and not is_control:
+        warnings.append("not_clean_ablation")
+    if broad_allowed:
+        warnings.append("broad_factor_contract")
+    retention_constraints_met = not (
+        any(factor in protected for factor in changes) or missing_spans
+    )
+    if reasons:
+        tier = "rejected"
+        confidence = 0.0
+    elif clean_ablation and intended_factor_changed and retention_constraints_met:
+        tier = "clean_ablation"
+        confidence = min(1.0, max(0.0, similarity))
+    elif warnings:
+        tier = "accepted_low_confidence"
+        confidence = min(0.65, max(0.0, similarity))
+    else:
+        tier = "accepted"
+        confidence = min(0.85, max(0.0, similarity))
+    return _result(
         reasons=reasons,
+        warnings=[] if reasons else warnings,
+        tier=tier,
         rubric={
             "token_similarity": similarity,
             "changed_factor_count": float(len(changes)),
             "contract_fit": 0.0 if reasons else 1.0,
+            "confidence": confidence,
+        },
+        diagnostics={
+            "changed_factors": list(changes),
+            "changed_factor_count": len(changes),
+            "allowed_factors": sorted(allowed),
+            "protected_factors": sorted(protected),
+            "intended_factor": intended_factor,
+            "intended_factor_changed": intended_factor_changed,
+            "parent_relative": parent_relative,
+            "clean_ablation_candidate": clean_ablation,
+            "retention_constraints_met": retention_constraints_met,
+            "missing_protected_spans": missing_spans,
+            "token_similarity": similarity,
         },
     )

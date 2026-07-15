@@ -193,6 +193,8 @@ class SearchStatsTracker:
                 "regressed": 0,
                 "unscored": 0,
             }
+            validation_tiers: Counter[str] = Counter()
+            improvement_goal_validation_tiers: Counter[str] = Counter()
             for evaluation in child_evaluations:
                 metadata = evaluation.get("metadata")
                 comparison = (
@@ -211,8 +213,11 @@ class SearchStatsTracker:
                     operator_id = "replay_control"
                 aggregate = operator_outcomes[operator_id]
                 aggregate["evaluated"] += 1
+                tier = _validation_tier(metadata)
+                validation_tiers[tier] += 1
                 if counts_toward_goal:
                     improvement_goal["evaluated"] += 1
+                    improvement_goal_validation_tiers[tier] += 1
                 if isinstance(comparison, dict):
                     comparison_records.append(comparison)
                     classification = str(
@@ -304,6 +309,10 @@ class SearchStatsTracker:
                 "improvement_goal_retained_children": improvement_goal["retained"],
                 "improvement_goal_regressed_children": improvement_goal["regressed"],
                 "improvement_goal_unscored_children": improvement_goal["unscored"],
+                "validation_tiers": dict(sorted(validation_tiers.items())),
+                "improvement_goal_validation_tiers": dict(
+                    sorted(improvement_goal_validation_tiers.items())
+                ),
                 "final_archive_retained": sum(
                     1
                     for evaluation in successful
@@ -609,6 +618,11 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     unscored = sum(
         int(item["outcome"].get("unscored_children", 0)) for item in records
     )
+    validation_tiers = _sum_counter_field(records, "validation_tiers")
+    improvement_goal_validation_tiers = _sum_counter_field(
+        records,
+        "improvement_goal_validation_tiers",
+    )
     goal_evaluated = sum(
         int(item["outcome"].get("improvement_goal_children", 0))
         for item in records
@@ -780,12 +794,14 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "retained_children": retained_comparisons,
         "regressed_children": regressed_comparisons,
         "unscored_children": unscored,
+        "validation_tiers": validation_tiers,
         "improvement_goal_children": goal_evaluated,
         "improvement_goal_comparable_children": goal_comparable,
         "improvement_goal_improved_children": goal_improved,
         "improvement_goal_retained_children": goal_retained,
         "improvement_goal_regressed_children": goal_regressed,
         "improvement_goal_unscored_children": goal_unscored,
+        "improvement_goal_validation_tiers": improvement_goal_validation_tiers,
         "final_archive_retained": retained,
         "new_cells_created": new_cells,
         "distinct_parent_count": len(
@@ -908,6 +924,35 @@ def _evaluation_attempt_id(evaluation: dict[str, Any]) -> str:
     if not isinstance(metadata, dict):
         return ""
     return str(metadata.get("perturbation_attempt_id") or "")
+
+
+def _validation_tier(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return "unknown"
+    transition = metadata.get("transition_validation")
+    if isinstance(transition, dict) and transition.get("tier"):
+        return str(transition["tier"])
+    validation = metadata.get("validation")
+    if isinstance(validation, dict) and validation.get("tier"):
+        return str(validation["tier"])
+    return "unknown"
+
+
+def _sum_counter_field(
+    records: list[dict[str, Any]],
+    field: str,
+) -> dict[str, int]:
+    counter: Counter[str] = Counter()
+    for item in records:
+        values = item.get("outcome", {}).get(field)
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            try:
+                counter[str(key)] += int(value)
+            except (TypeError, ValueError):
+                continue
+    return dict(sorted(counter.items()))
 
 
 def _score_total(evaluation: dict[str, Any]) -> float:

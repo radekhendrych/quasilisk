@@ -223,10 +223,14 @@ def build_mutation_tasks(
             (
                 "exploit",
                 "answer_shape_microedit",
-                "direct_adjudication",
+                "direct_adjudication_form",
                 _contract(
                     fingerprint,
-                    allowed=("direct_adjudication", "commitment_form", "output_shape"),
+                    allowed=(
+                        "direct_adjudication",
+                        "direct_adjudication_form",
+                        "commitment_form",
+                    ),
                     min_similarity=max(similarity, 0.8),
                     max_changes=2,
                 ),

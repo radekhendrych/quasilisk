@@ -1420,6 +1420,7 @@ def prepare_candidates(
                         parent=parent_fingerprint,
                         child=child_fingerprint,
                         contract=task.contract,
+                        task=task,
                     )
                     transition_validation = transition_result.to_jsonable()
                     if not transition_result.accepted:

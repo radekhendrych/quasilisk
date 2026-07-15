@@ -248,6 +248,9 @@ class ValidationResult:
     accepted: bool
     reasons: list[str]
     rubric: dict[str, float]
+    tier: str = "accepted"
+    warnings: list[str] = dataclasses.field(default_factory=list)
+    diagnostics: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def to_jsonable(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

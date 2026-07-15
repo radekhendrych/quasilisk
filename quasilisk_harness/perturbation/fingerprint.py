@@ -37,10 +37,53 @@ _HARM_TERMS = (
     "emergency",
     "violence",
 )
+_DIRECT_FORM_TERMS = (
+    "give one direct verdict",
+    "state one direct verdict",
+    "state one clear verdict",
+    "state one unambiguous answer",
+    "give your verdict",
+    "state your",
+    "answer directly",
+    "direct verdict",
+    "clear verdict",
+    "considered verdict",
+    "does it follow",
+    "evaluate",
+    "assess",
+)
+
+FEATURE_ALIASES = {
+    "argument_frame": "argument_route",
+    "pressure_style": "pressure_pattern",
+    "output_shape": "commitment_form",
+}
 
 
 def normalized_tokens(text: str) -> tuple[str, ...]:
     return tuple(re.findall(r"[\w'-]+", text.lower()))
+
+
+def canonical_factor(factor: str) -> str:
+    return FEATURE_ALIASES.get(str(factor), str(factor))
+
+
+def canonical_dimensions(dimensions: dict[str, Any]) -> dict[str, Any]:
+    canonical: dict[str, Any] = {}
+    for key, value in dimensions.items():
+        if str(key) in FEATURE_ALIASES:
+            continue
+        canonical[canonical_factor(str(key))] = value
+    for key, value in dimensions.items():
+        canonical_key = canonical_factor(str(key))
+        if canonical_key in canonical and canonical[canonical_key] is not None:
+            continue
+        canonical[canonical_key] = value
+    return canonical
+
+
+def canonical_factors(factors: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(canonical_factor(str(item)) for item in factors))
 
 
 def token_similarity(
@@ -64,6 +107,27 @@ def _infer_case_family(objective_id: str, prompt: str) -> str:
         if any(keyword.lower() in lower for keyword in keywords):
             return family
     return "objective_anchor"
+
+
+def _direct_adjudication_form(prompt: str) -> str:
+    lower = prompt.lower()
+    for term in _DIRECT_FORM_TERMS:
+        if term in lower:
+            return term
+    return "none"
+
+
+def _case_detail_signature(objective_id: str, prompt: str) -> str:
+    lower = prompt.lower()
+    hits: list[str] = []
+    for keywords in case_keywords_for_objective(objective_id).values():
+        for keyword in keywords:
+            normalized = str(keyword).strip().lower()
+            if normalized and normalized in lower and normalized not in hits:
+                hits.append(normalized)
+    if not hits:
+        return "none"
+    return "|".join(sorted(hits))
 
 
 def _semantic_anchors(objective: ModuleType, prompt: str) -> tuple[str, ...]:
@@ -99,7 +163,9 @@ def build_prompt_fingerprint(
         "conditional_scaffold": bool(contains_conditional_scaffold(lower)),
         "category_label": bool(contains_philosophical_label(lower)),
         "direct_adjudication": any(term in lower for term in _DIRECT_TERMS),
+        "direct_adjudication_form": _direct_adjudication_form(prompt),
         "harm_application": any(term in lower for term in _HARM_TERMS),
+        "case_detail": _case_detail_signature(objective.OBJECTIVE_ID, prompt),
     }
     spans = list(_semantic_anchors(objective, prompt))
     fingerprint_hook = getattr(objective, "fingerprint_prompt", None)
@@ -117,10 +183,11 @@ def build_prompt_fingerprint(
                     text = str(span).strip().lower()
                     if text and text not in spans:
                         spans.append(text)
+    canonical = canonical_dimensions(dimensions)
     spans_tuple = tuple(spans)
-    payload = repr((sorted(dimensions.items()), spans_tuple, tokens))
+    payload = repr((sorted(canonical.items()), spans_tuple, tokens))
     return PromptFingerprint(
-        dimensions=dimensions,
+        dimensions=canonical,
         protected_spans=spans_tuple,
         normalized_tokens=tokens,
         fingerprint_hash=short_hash(payload, 16),
@@ -131,10 +198,12 @@ def changed_factors(
     parent: PromptFingerprint,
     child: PromptFingerprint,
 ) -> tuple[str, ...]:
+    parent_dimensions = canonical_dimensions(parent.dimensions)
+    child_dimensions = canonical_dimensions(child.dimensions)
     changed = {
         key
-        for key in set(parent.dimensions) | set(child.dimensions)
-        if parent.dimensions.get(key) != child.dimensions.get(key)
+        for key in set(parent_dimensions) | set(child_dimensions)
+        if parent_dimensions.get(key) != child_dimensions.get(key)
     }
     if parent.normalized_tokens != child.normalized_tokens and not changed:
         changed.add("style_surface")
