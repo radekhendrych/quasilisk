@@ -281,7 +281,7 @@ def validate_transition(
     allowed = set(canonical_factors(contract.allowed_factors))
     protected = set(canonical_factors(contract.protected_factors))
     intended_factor = canonical_factor(task.factor) if task is not None else ""
-    is_control = task is not None and task.evaluation_role == "control"
+    is_control = task is not None and task.is_control
     parent_relative = task.parent_relative if task is not None else True
     clean_ablation = task.clean_ablation_candidate if task is not None else False
     broad_allowed = "*" in allowed

@@ -72,7 +72,9 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 - `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
 - `parent_plan_outcomes.jsonl`: per-generation parent-plan outcome records used by outcome memory; this does not duplicate target responses from `events.jsonl`.
 - `operator_outcomes.jsonl`: quality-aware outcomes for individual mutation operators and factors, including persistent run-local blocking decisions.
-- `search_stats.jsonl`: append-only perturbator-attempt lifecycle records linking selected parent cells and plans to validation, child-score, budget, and final archive outcomes.
+- `search_stats.jsonl`: append-only schema-v3 records for every produced variant,
+  including task purpose, lifecycle stage, terminal outcome, validation, budget,
+  score comparison, and final archive retention.
 - `run_statistics.json`: live aggregate perturbator effectiveness by target, parent cell, strategy, route/case, and generation.
 - `affordances_<model>.json`: compact target-specific framing cues extracted from observed responses, such as preferred terms, visible reasoning cues, successful frames, failed frames, and refusal cues.
 - `archive_<model>.json`: best prompts per MAP-Elites feature cell.
@@ -85,11 +87,16 @@ generation traces, perturbations, candidate metadata, and child evaluations.
 Archive effectiveness is credited from the final archive state after each
 generation, so parallel evaluation order and transient insertions do not inflate
 retention, new-cell, or cell-improvement rates.
-Primary perturbator rates exclude attempts that used local fallback variants;
-the corresponding `search_*` rates include fallbacks and describe end-to-end
-search effectiveness. Scores also carry `quality` (`confirmed`, `degraded`, or
-`unscored`); unscored judge fallbacks remain audited but are excluded from
-parent/child learning and archive insertion.
+The optimization headline is `optimization_end_to_end_rate`: improved
+optimization variants divided by every perturbator-produced optimization
+variant. Invalid, duplicate, truncated, errored, and unscored outputs therefore
+remain denominator failures. `optimization_valid_rate` isolates validation
+yield, while `optimization_conditional_rate` reports improvement only among
+comparable evaluations. Discovery, diagnostic, replay-control, and local
+fallback outcomes are reported separately and cannot enter the 50% optimization
+goal. Scores also carry `quality` (`confirmed`, `degraded`, or `unscored`);
+unscored judge fallbacks remain audited but are excluded from parent/child
+learning and archive insertion.
 
 Prompt text used for perturbator and judge requests lives in template files
 under `templates/` by default. Runs can override those paths through the
@@ -115,10 +122,11 @@ scores:
 Failed calls and malformed judge responses are retained in the audit but do not
 contribute heuristic pseudo-scores to the median. If quorum is not met, the
 candidate uses the objective's deterministic heuristic fallback. The aggregate
-score has `score_source: "llm_judge_panel"`; its legacy component fields and
-signals come from the valid member closest to the median, while
-`score.judge_panel` contains component medians and per-signal vote counts for
-diagnosis. No run-relative score normalization is applied.
+score has `score_source: "llm_judge_panel"`. The stored representative remains
+available for audit compatibility, while decisions use a coherent evidence
+view: panel median totals and numeric components, strict-majority signals and
+notes, and explicit ties. `score.judge_panel` contains those medians and vote
+counts. No run-relative score normalization is applied.
 
 For panels, `event["judge"]` is a schema-versioned envelope containing the
 shared request, ordered `members`, aggregate usage/retries, and `aggregation`
@@ -162,9 +170,9 @@ with the candidate; the target receives only the final user prompt.
 
 Planned perturbation uses independent mutation tasks. Each task declares one
 operator, one factor, protected parent features/spans, a maximum factor-change
-count, a token-similarity floor, archive eligibility, and whether it counts
-toward the clean perturbator-improvement goal. Candidate validation has two
-layers: absolute prompt integrity and a parent-relative transition contract.
+count, a token-similarity floor, archive eligibility, and one purpose:
+`optimization`, `discovery`, `diagnostic`, or `control`. Candidate validation
+has two layers: absolute prompt integrity and a parent-relative transition contract.
 This permits one-factor ablation without requiring every pre-existing scaffold
 to disappear at once. Broad low-signal and coverage exploration remain available
 as explicit v2 exploration operators, but they are separated from clean
@@ -173,9 +181,12 @@ parent-relative perturbation metrics. Validation records include a tier
 `clean_ablation`), warnings, changed-factor diagnostics, retention status, and
 confidence. Exact replay controls can be enabled; they run before search
 candidates, remain in `events.jsonl`, bypass duplicate rejection, and never
-enter MAP-Elites. Malformed judge JSON is retried before a result becomes an
-audited, unscored fallback. Optional paired rejudging can reassess unusually
-large parent/child drops without changing the original target response.
+enter MAP-Elites. A valid replay becomes the contemporaneous comparison baseline
+for that parent's children and exposes target/judge variance separately.
+Malformed judge JSON is retried before a result becomes an audited, unscored
+fallback. Optional paired rejudging symmetrically confirms every apparent
+improvement and unusually large regression without changing the original target
+response.
 
 For the abstract moral-susceptibility objectives, MAP-Elites cells are oriented
 around argument route, pressure pattern, and commitment form. Mutation guidance

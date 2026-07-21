@@ -1,20 +1,54 @@
-"""Perturbator-attributed search statistics."""
+"""Purpose-aware perturbator lifecycle statistics."""
 
 from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from .utils import append_jsonl, utc_now, write_json
+from .perturbation.evidence import ScoreEvidence
+from .perturbation.models import (
+    MutationTask,
+    TaskPurpose,
+    VariantLifecycle,
+    VariantOutcome,
+    VariantSource,
+    VariantStage,
+)
+from .perturbation.outcomes import OutcomePolicy
+from .utils import append_jsonl, short_hash, utc_now, write_json
 
 
-SEARCH_STATS_SCHEMA_VERSION = 2
+SEARCH_STATS_SCHEMA_VERSION = 3
+OPTIMIZATION_IMPROVEMENT_TARGET = 0.5
+METRIC_DEFINITIONS = {
+    "optimization_end_to_end_rate": (
+        "improved optimization variants / all perturbator-produced optimization "
+        "variants; invalid, truncated, and unscored variants remain in the denominator"
+    ),
+    "optimization_valid_rate": (
+        "validated optimization variants / perturbator-produced optimization variants"
+    ),
+    "optimization_conditional_rate": (
+        "improved optimization variants / comparable optimization variants"
+    ),
+    "discovery_success_rate": (
+        "archive-retained discovery variants / perturbator-produced discovery variants"
+    ),
+    "diagnostic_effect_rate": (
+        "improved or regressed diagnostic variants / perturbator-produced diagnostic variants"
+    ),
+    "control_variance": (
+        "signed and absolute score deltas for comparable harness replay controls"
+    ),
+}
 ArchiveSnapshot = dict[tuple[str, ...], dict[str, Any]]
 
 
 class SearchStatsTracker:
+    """Track each perturbator output from production through terminal outcome."""
+
     def __init__(
         self,
         *,
@@ -43,10 +77,12 @@ class SearchStatsTracker:
         selection_method: str,
         parent_eval: dict[str, Any],
     ) -> None:
+        evidence = ScoreEvidence.from_evaluation(parent_eval)
         parent = {
             "candidate_id": str(parent_eval.get("candidate_id", "")),
             "cell": list(parent_eval.get("archive_cell") or []),
-            "score": _score_total(parent_eval),
+            "score": evidence.total or 0.0,
+            "score_evidence_basis": evidence.basis,
             "selection_index": selection_index,
             "selection_method": selection_method,
         }
@@ -58,12 +94,13 @@ class SearchStatsTracker:
             "perturbator": {
                 "produced": 0,
                 "accepted": 0,
+                "controls": 0,
                 "fallback_used": False,
                 "retry_count": 0,
                 "usage": {},
                 "error": None,
             },
-            "accepted_candidate_ids": [],
+            "variant_lifecycles": [],
             "rejection_reasons": {},
         }
         self._attempts[attempt_id] = attempt
@@ -88,29 +125,109 @@ class SearchStatsTracker:
         error: str | None,
     ) -> None:
         attempt = self._attempts[attempt_id]
-        generated_candidates = [
-            candidate
-            for candidate in accepted_candidates
-            if candidate.metadata.get("evaluation_role") != "control"
+        if produced < 0:
+            raise ValueError("produced must be non-negative")
+        fallback_used = bool(audit.get("fallback_used"))
+        model_source = (
+            VariantSource.FALLBACK
+            if fallback_used
+            else VariantSource.PERTURBATOR
+        )
+        lifecycles: list[VariantLifecycle] = []
+
+        for candidate in accepted_candidates:
+            task = _task_from_metadata(candidate.metadata)
+            purpose = task.purpose if task is not None else _purpose_from_metadata(
+                candidate.metadata
+            )
+            source = (
+                VariantSource.HARNESS
+                if purpose is TaskPurpose.CONTROL
+                else model_source
+            )
+            lifecycles.append(
+                VariantLifecycle(
+                    variant_id=str(candidate.id),
+                    task_id=task.task_id if task is not None else "",
+                    purpose=purpose,
+                    operator_id=(
+                        task.operator_id if task is not None else "unspecified_task"
+                    ),
+                    source=source,
+                    stage=VariantStage.VALIDATED,
+                    validation_tier=_validation_tier(candidate.metadata),
+                )
+            )
+
+        for index, item in enumerate(rejected):
+            task = _task_from_mapping(item)
+            purpose = task.purpose if task is not None else _purpose_from_metadata(item)
+            source = (
+                VariantSource.HARNESS
+                if purpose is TaskPurpose.CONTROL
+                else model_source
+            )
+            variant_id = str(item.get("task_id") or "") or short_hash(
+                f"{attempt_id}|rejected|{index}|{item.get('prompt', '')}",
+                16,
+            )
+            lifecycles.append(
+                VariantLifecycle(
+                    variant_id=variant_id,
+                    task_id=task.task_id if task is not None else "",
+                    purpose=purpose,
+                    operator_id=(
+                        task.operator_id
+                        if task is not None
+                        else str(item.get("operator_id") or "unspecified_task")
+                    ),
+                    source=source,
+                    outcome=VariantOutcome.INVALID,
+                    validation_tier=_validation_tier(item),
+                )
+            )
+
+        recorded_model_outputs = sum(
+            item.purpose is not TaskPurpose.CONTROL for item in lifecycles
+        )
+        if recorded_model_outputs > produced:
+            raise ValueError(
+                "Recorded non-control outputs exceed the reported produced count: "
+                f"{recorded_model_outputs}>{produced}"
+            )
+        unassigned_count = max(0, int(produced) - recorded_model_outputs)
+        unassigned_purpose = _unassigned_output_purpose(audit)
+        for index in range(unassigned_count):
+            lifecycles.append(
+                VariantLifecycle(
+                    variant_id=f"unassigned-{attempt_id}-{index}",
+                    task_id="",
+                    purpose=unassigned_purpose,
+                    operator_id="unassigned_model_output",
+                    source=model_source,
+                    outcome=VariantOutcome.INVALID,
+                )
+            )
+
+        generated = [
+            item for item in lifecycles if item.purpose is not TaskPurpose.CONTROL
         ]
-        control_candidates = [
-            candidate
-            for candidate in accepted_candidates
-            if candidate.metadata.get("evaluation_role") == "control"
+        controls = [
+            item for item in lifecycles if item.purpose is TaskPurpose.CONTROL
         ]
+        accepted = [item for item in generated if item.stage is VariantStage.VALIDATED]
         attempt["plan"] = _compact_plan(plan)
         attempt["perturbator"] = {
             "produced": int(produced),
-            "accepted": len(generated_candidates),
-            "controls": len(control_candidates),
-            "fallback_used": bool(audit.get("fallback_used")),
+            "accepted": len(accepted),
+            "controls": len(controls),
+            "unassigned_outputs": unassigned_count,
+            "fallback_used": fallback_used,
             "retry_count": int(audit.get("retry_count", 0) or 0),
             "usage": dict(audit.get("usage") or {}),
             "error": error,
         }
-        attempt["accepted_candidate_ids"] = [
-            str(candidate.id) for candidate in accepted_candidates
-        ]
+        attempt["variant_lifecycles"] = [item.to_jsonable() for item in lifecycles]
         attempt["rejection_reasons"] = dict(
             Counter(str(item.get("reason") or "unknown") for item in rejected)
         )
@@ -124,213 +241,55 @@ class SearchStatsTracker:
         archive_before: ArchiveSnapshot,
         archive_after: ArchiveSnapshot,
     ) -> list[dict[str, Any]]:
-        scheduled_by_attempt: dict[str, set[str]] = defaultdict(set)
-        task_by_candidate: dict[str, dict[str, Any]] = {}
-        for candidate in scheduled_candidates:
-            attempt_id = str(candidate.metadata.get("perturbation_attempt_id") or "")
-            if attempt_id:
-                scheduled_by_attempt[attempt_id].add(str(candidate.id))
-            task = candidate.metadata.get("mutation_task")
-            if isinstance(task, dict):
-                task_by_candidate[str(candidate.id)] = task
-
-        evaluations_by_attempt: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        successful_evaluation_by_id: dict[str, dict[str, Any]] = {}
-        for evaluation in evaluations:
-            metadata = evaluation.get("metadata")
-            attempt_id = (
-                str(metadata.get("perturbation_attempt_id") or "")
-                if isinstance(metadata, dict)
-                else ""
-            )
-            if not attempt_id:
-                continue
-            evaluations_by_attempt[attempt_id].append(evaluation)
-            candidate_id = str(evaluation.get("candidate_id", ""))
-            if not evaluation.get("error") and evaluation.get("response"):
-                successful_evaluation_by_id[candidate_id] = evaluation
-
+        scheduled_ids = {str(candidate.id) for candidate in scheduled_candidates}
+        evaluations_by_id = {
+            str(evaluation.get("candidate_id", "")): evaluation
+            for evaluation in evaluations
+        }
         retained_ids = {
             str(candidate_id)
             for cell in archive_after.values()
             for candidate_id in cell.get("candidate_ids", ())
         }
+        successful_evaluations = {
+            candidate_id: evaluation
+            for candidate_id, evaluation in evaluations_by_id.items()
+            if not evaluation.get("error") and evaluation.get("response")
+        }
         cell_credits, global_credit = _archive_credits(
             archive_before=archive_before,
             archive_after=archive_after,
-            evaluation_by_id=successful_evaluation_by_id,
+            evaluation_by_id=successful_evaluations,
         )
 
         completed: list[dict[str, Any]] = []
         for attempt_id, attempt in self._attempts.items():
             if attempt["generation"] != generation or attempt.get("completed"):
                 continue
-            child_evaluations = evaluations_by_attempt.get(attempt_id, [])
-            successful = [
+            lifecycles = [
+                VariantLifecycle.from_jsonable(item)
+                for item in attempt.get("variant_lifecycles", ())
+            ]
+            finalized = [
+                _finalize_lifecycle(
+                    item,
+                    scheduled_ids=scheduled_ids,
+                    evaluation=evaluations_by_id.get(item.variant_id),
+                    archive_retained=item.variant_id in retained_ids,
+                )
+                for item in lifecycles
+            ]
+            evaluated_variant_ids = {
+                item.variant_id
+                for item in finalized
+                if item.stage is VariantStage.EVALUATED
+            }
+            attempt_evaluations = [
                 evaluation
-                for evaluation in child_evaluations
-                if not evaluation.get("error") and evaluation.get("response")
+                for candidate_id, evaluation in evaluations_by_id.items()
+                if candidate_id in evaluated_variant_ids
             ]
-            parent_score = float(attempt["parent"]["score"])
-            child_scores = [_score_total(item) for item in successful]
-            deltas = [score - parent_score for score in child_scores]
-            comparison_records: list[dict[str, Any]] = []
-            operator_outcomes: dict[str, dict[str, int]] = defaultdict(
-                lambda: {
-                    "evaluated": 0,
-                    "comparable": 0,
-                    "improved": 0,
-                    "retained": 0,
-                    "regressed": 0,
-                    "unscored": 0,
-                }
-            )
-            improvement_goal = {
-                "evaluated": 0,
-                "comparable": 0,
-                "improved": 0,
-                "retained": 0,
-                "regressed": 0,
-                "unscored": 0,
-            }
-            validation_tiers: Counter[str] = Counter()
-            improvement_goal_validation_tiers: Counter[str] = Counter()
-            for evaluation in child_evaluations:
-                metadata = evaluation.get("metadata")
-                comparison = (
-                    metadata.get("parent_child_comparison")
-                    if isinstance(metadata, dict)
-                    else None
-                )
-                candidate_id = str(evaluation.get("candidate_id", ""))
-                task = task_by_candidate.get(candidate_id, {})
-                operator_id = str(task.get("operator_id") or "unspecified_task")
-                role = str(task.get("evaluation_role") or "search")
-                counts_toward_goal = bool(
-                    task.get("counts_toward_improvement_goal")
-                )
-                if role == "control":
-                    operator_id = "replay_control"
-                aggregate = operator_outcomes[operator_id]
-                aggregate["evaluated"] += 1
-                tier = _validation_tier(metadata)
-                validation_tiers[tier] += 1
-                if counts_toward_goal:
-                    improvement_goal["evaluated"] += 1
-                    improvement_goal_validation_tiers[tier] += 1
-                if isinstance(comparison, dict):
-                    comparison_records.append(comparison)
-                    classification = str(
-                        comparison.get("classification") or "unscored"
-                    )
-                    if comparison.get("comparable"):
-                        aggregate["comparable"] += 1
-                        if counts_toward_goal:
-                            improvement_goal["comparable"] += 1
-                    aggregate[classification] = int(
-                        aggregate.get(classification, 0)
-                    ) + 1
-                    if counts_toward_goal:
-                        improvement_goal[classification] = int(
-                            improvement_goal.get(classification, 0)
-                        ) + 1
-                else:
-                    aggregate["comparable"] += 1
-                    if counts_toward_goal:
-                        improvement_goal["comparable"] += 1
-                    if _score_total(evaluation) > parent_score:
-                        aggregate["improved"] += 1
-                        if counts_toward_goal:
-                            improvement_goal["improved"] += 1
-                    elif _score_total(evaluation) == parent_score:
-                        aggregate["retained"] += 1
-                        if counts_toward_goal:
-                            improvement_goal["retained"] += 1
-                    else:
-                        aggregate["regressed"] += 1
-                        if counts_toward_goal:
-                            improvement_goal["regressed"] += 1
-            comparable = [
-                item for item in comparison_records if item.get("comparable")
-            ]
-            classified_improved = sum(
-                item.get("classification") == "improved" for item in comparable
-            )
-            classified_retained = sum(
-                item.get("classification") == "retained" for item in comparable
-            )
-            classified_regressed = sum(
-                item.get("classification") == "regressed" for item in comparable
-            )
-            accepted_ids = set(attempt.get("accepted_candidate_ids", ()))
-            scheduled_ids = scheduled_by_attempt.get(attempt_id, set())
             credit = cell_credits.get(attempt_id, {})
-            outcome = {
-                "parent_score": parent_score,
-                "scheduled": len(scheduled_ids),
-                "evaluated": len(child_evaluations),
-                "non_error_children": len(successful),
-                "errored_children": len(child_evaluations) - len(successful),
-                "budget_truncated": max(0, len(accepted_ids) - len(scheduled_ids)),
-                "best_child_score": max(child_scores) if child_scores else None,
-                "best_score_delta": max(deltas) if deltas else None,
-                "mean_score_delta": _mean(deltas),
-                "score_delta_sum": round(sum(deltas), 3),
-                "positive_score_gain": round(
-                    sum(max(0.0, delta) for delta in deltas),
-                    3,
-                ),
-                "comparable_children": (
-                    len(comparable) if comparison_records else len(successful)
-                ),
-                "unscored_children": (
-                    len(comparison_records) - len(comparable)
-                    if comparison_records
-                    else 0
-                ),
-                "improved_children": (
-                    classified_improved
-                    if comparison_records
-                    else sum(1 for delta in deltas if delta > 0)
-                ),
-                "retained_children": (
-                    classified_retained
-                    if comparison_records
-                    else sum(1 for delta in deltas if delta == 0)
-                ),
-                "regressed_children": (
-                    classified_regressed
-                    if comparison_records
-                    else sum(1 for delta in deltas if delta < 0)
-                ),
-                "improvement_goal_children": improvement_goal["evaluated"],
-                "improvement_goal_comparable_children": improvement_goal["comparable"],
-                "improvement_goal_improved_children": improvement_goal["improved"],
-                "improvement_goal_retained_children": improvement_goal["retained"],
-                "improvement_goal_regressed_children": improvement_goal["regressed"],
-                "improvement_goal_unscored_children": improvement_goal["unscored"],
-                "validation_tiers": dict(sorted(validation_tiers.items())),
-                "improvement_goal_validation_tiers": dict(
-                    sorted(improvement_goal_validation_tiers.items())
-                ),
-                "final_archive_retained": sum(
-                    1
-                    for evaluation in successful
-                    if str(evaluation.get("candidate_id", "")) in retained_ids
-                ),
-                "new_cells_created": int(credit.get("new_cells_created", 0)),
-                "cell_best_improvements": int(
-                    credit.get("cell_best_improvements", 0)
-                ),
-                "cell_best_score_gain": round(
-                    float(credit.get("cell_best_score_gain", 0.0)),
-                    3,
-                ),
-                "global_best_delta": round(
-                    global_credit.get(attempt_id, 0.0),
-                    3,
-                ),
-            }
             record = {
                 "event_type": "attempt_completed",
                 "attempt_id": attempt_id,
@@ -339,11 +298,34 @@ class SearchStatsTracker:
                 "plan": attempt["plan"],
                 "perturbator": {
                     **attempt["perturbator"],
-                    "evaluated": len(child_evaluations),
-                    "budget_truncated": outcome["budget_truncated"],
+                    "evaluated": sum(
+                        item.stage is VariantStage.EVALUATED
+                        and item.purpose is not TaskPurpose.CONTROL
+                        for item in finalized
+                    ),
+                    "budget_truncated": sum(
+                        item.outcome is VariantOutcome.TRUNCATED
+                        and item.purpose is not TaskPurpose.CONTROL
+                        for item in finalized
+                    ),
                 },
-                "outcome": outcome,
-                "operator_outcomes": dict(operator_outcomes),
+                "outcome": _attempt_outcome(
+                    attempt=attempt,
+                    variants=finalized,
+                    evaluations=attempt_evaluations,
+                    credit=credit,
+                    global_best_delta=global_credit.get(attempt_id, 0.0),
+                ),
+                "purpose_outcomes": {
+                    purpose.value: OutcomePolicy.metrics(
+                        finalized,
+                        purpose=purpose,
+                        source=None,
+                    )
+                    for purpose in TaskPurpose
+                },
+                "operator_outcomes": _operator_outcomes(finalized),
+                "variant_lifecycles": [item.to_jsonable() for item in finalized],
                 "rejection_reasons": attempt["rejection_reasons"],
             }
             attempt["completed"] = True
@@ -359,16 +341,6 @@ class SearchStatsTracker:
         by_strategy: dict[str, list[dict[str, Any]]] = defaultdict(list)
         by_route_case: dict[str, list[dict[str, Any]]] = defaultdict(list)
         by_generation: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        by_operator: dict[str, dict[str, int]] = defaultdict(
-            lambda: {
-                "evaluated": 0,
-                "comparable": 0,
-                "improved": 0,
-                "retained": 0,
-                "regressed": 0,
-                "unscored": 0,
-            }
-        )
         rejection_reasons: Counter[str] = Counter()
 
         for record in self._completed:
@@ -385,11 +357,6 @@ class SearchStatsTracker:
             by_strategy[strategy].append(record)
             by_route_case[route_case].append(record)
             by_generation[str(record["generation"])].append(record)
-            for operator_id, outcome in (
-                record.get("operator_outcomes") or {}
-            ).items():
-                for key in by_operator[operator_id]:
-                    by_operator[operator_id][key] += int(outcome.get(key, 0))
             rejection_reasons.update(record.get("rejection_reasons") or {})
 
         parent_cell_aggregates = _aggregate_groups(by_parent_cell)
@@ -402,6 +369,7 @@ class SearchStatsTracker:
             "updated_at": utc_now(),
             "attempts_started": len(self._attempts),
             "attempts_completed": len(self._completed),
+            "metric_definitions": dict(METRIC_DEFINITIONS),
             "overall": _aggregate(self._completed),
             "by_parent_cell": parent_cell_aggregates,
             "top_parent_cells": _rank_parent_cells(
@@ -415,19 +383,7 @@ class SearchStatsTracker:
             "by_strategy": _aggregate_groups(by_strategy),
             "by_route_case": _aggregate_groups(by_route_case),
             "by_generation": _aggregate_groups(by_generation),
-            "by_operator": {
-                operator_id: {
-                    **outcome,
-                    "improvement_rate": _ratio(
-                        outcome["improved"], outcome["comparable"]
-                    ),
-                    "retention_rate": _ratio(
-                        outcome["improved"] + outcome["retained"],
-                        outcome["comparable"],
-                    ),
-                }
-                for operator_id, outcome in sorted(by_operator.items())
-            },
+            "by_operator": _aggregate_operators(self._completed),
             "rejection_reasons": dict(sorted(rejection_reasons.items())),
         }
 
@@ -437,18 +393,19 @@ class SearchStatsTracker:
         return {
             "search_attempts_started": summary["attempts_started"],
             "search_attempts_completed": summary["attempts_completed"],
-            "perturbator_validity_rate": overall["validity_rate"],
-            "perturbator_improvement_rate": overall["improvement_rate"],
-            "perturbator_improvement_goal_rate": overall["improvement_goal_rate"],
-            "perturbator_improvement_goal_retention_rate": overall[
-                "improvement_goal_retention_rate"
+            "optimization_end_to_end_rate": overall[
+                "optimization_end_to_end_rate"
             ],
-            "perturbator_improvement_goal_regression_rate": overall[
-                "improvement_goal_regression_rate"
+            "optimization_valid_rate": overall["optimization_valid_rate"],
+            "optimization_conditional_rate": overall[
+                "optimization_conditional_rate"
             ],
-            "perturbator_retention_rate": overall["retention_rate"],
-            "perturbator_regression_rate": overall["regression_rate"],
-            "perturbator_unscored_rate": overall["unscored_rate"],
+            "optimization_target_gap": overall["optimization_target_gap"],
+            "discovery_success_rate": overall["discovery_success_rate"],
+            "diagnostic_effect_rate": overall["diagnostic_effect_rate"],
+            "control_mean_absolute_delta": overall["control_variance"][
+                "mean_absolute_delta"
+            ],
             "perturbator_archive_yield": overall["archive_yield"],
             "perturbator_new_cell_yield": overall["new_cell_yield"],
         }
@@ -494,6 +451,438 @@ class SearchStatsTracker:
                 **record,
             },
         )
+
+
+def _finalize_lifecycle(
+    lifecycle: VariantLifecycle,
+    *,
+    scheduled_ids: set[str],
+    evaluation: dict[str, Any] | None,
+    archive_retained: bool,
+) -> VariantLifecycle:
+    if lifecycle.outcome is VariantOutcome.INVALID:
+        return lifecycle
+    if lifecycle.variant_id not in scheduled_ids:
+        return lifecycle.advance(
+            VariantStage.VALIDATED,
+            outcome=VariantOutcome.TRUNCATED,
+        )
+    if evaluation is None:
+        return lifecycle.advance(
+            VariantStage.SCHEDULED,
+            outcome=VariantOutcome.UNSCORED,
+        )
+    comparison = _comparison(evaluation)
+    score_delta = (
+        float(comparison["total_delta"])
+        if comparison.get("total_delta") is not None
+        else None
+    )
+    evaluation_validation_tier = _validation_tier(evaluation.get("metadata"))
+    return lifecycle.advance(
+        VariantStage.EVALUATED,
+        outcome=OutcomePolicy.classify_evaluation(evaluation),
+        archive_retained=(
+            archive_retained
+            and not evaluation.get("error")
+            and bool(evaluation.get("response"))
+        ),
+        score=_score_total(evaluation),
+        score_delta=score_delta,
+        validation_tier=(
+            None
+            if evaluation_validation_tier == "unknown"
+            else evaluation_validation_tier
+        ),
+    )
+
+
+def _attempt_outcome(
+    *,
+    attempt: dict[str, Any],
+    variants: list[VariantLifecycle],
+    evaluations: list[dict[str, Any]],
+    credit: dict[str, float],
+    global_best_delta: float,
+) -> dict[str, Any]:
+    noncontrols = [
+        item for item in variants if item.purpose is not TaskPurpose.CONTROL
+    ]
+    evaluated = [item for item in noncontrols if item.stage is VariantStage.EVALUATED]
+    comparable = [
+        item
+        for item in evaluated
+        if item.outcome
+        in {
+            VariantOutcome.IMPROVED,
+            VariantOutcome.RETAINED,
+            VariantOutcome.REGRESSED,
+        }
+    ]
+    deltas = [float(item.score_delta) for item in comparable if item.score_delta is not None]
+    child_scores = [float(item.score) for item in evaluated if item.score is not None]
+    validation_tiers = Counter(
+        item.validation_tier
+        for item in noncontrols
+        if item.stage is not VariantStage.PRODUCED
+    )
+    return {
+        "parent_score": float(attempt["parent"]["score"]),
+        "scheduled": sum(
+            item.stage in {VariantStage.SCHEDULED, VariantStage.EVALUATED}
+            for item in noncontrols
+        ),
+        "evaluated": len(evaluated),
+        "non_error_children": sum(
+            not evaluation.get("error") and bool(evaluation.get("response"))
+            for evaluation in evaluations
+            if _evaluation_purpose(evaluation) is not TaskPurpose.CONTROL
+        ),
+        "errored_children": sum(
+            bool(evaluation.get("error")) or not evaluation.get("response")
+            for evaluation in evaluations
+            if _evaluation_purpose(evaluation) is not TaskPurpose.CONTROL
+        ),
+        "budget_truncated": sum(
+            item.outcome is VariantOutcome.TRUNCATED for item in noncontrols
+        ),
+        "best_child_score": max(child_scores) if child_scores else None,
+        "best_score_delta": max(deltas) if deltas else None,
+        "mean_score_delta": _mean(deltas),
+        "score_delta_sum": round(sum(deltas), 3),
+        "positive_score_gain": round(
+            sum(max(0.0, delta) for delta in deltas),
+            3,
+        ),
+        "validation_tiers": dict(sorted(validation_tiers.items())),
+        "final_archive_retained": sum(item.archive_retained for item in noncontrols),
+        "new_cells_created": int(credit.get("new_cells_created", 0)),
+        "cell_best_improvements": int(credit.get("cell_best_improvements", 0)),
+        "cell_best_score_gain": round(
+            float(credit.get("cell_best_score_gain", 0.0)),
+            3,
+        ),
+        "global_best_delta": round(global_best_delta, 3),
+    }
+
+
+def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    variants = _all_lifecycles(records)
+    by_purpose = {
+        purpose.value: OutcomePolicy.metrics(
+            variants,
+            purpose=purpose,
+            source=(
+                None
+                if purpose is TaskPurpose.CONTROL
+                else VariantSource.PERTURBATOR
+            ),
+        )
+        for purpose in TaskPurpose
+    }
+    optimization = by_purpose[TaskPurpose.OPTIMIZATION.value]
+    discovery = by_purpose[TaskPurpose.DISCOVERY.value]
+    diagnostic = by_purpose[TaskPurpose.DIAGNOSTIC.value]
+    model_variants = [
+        item for item in variants if item.source is VariantSource.PERTURBATOR
+    ]
+    model_evaluated = [
+        item
+        for item in model_variants
+        if item.stage is VariantStage.EVALUATED
+        and item.purpose is not TaskPurpose.CONTROL
+    ]
+    retained = sum(item.archive_retained for item in model_evaluated)
+    discovery_successes = sum(
+        item.archive_retained
+        for item in model_variants
+        if item.purpose is TaskPurpose.DISCOVERY
+    )
+    diagnostic_effects = diagnostic[VariantOutcome.IMPROVED.value] + diagnostic[
+        VariantOutcome.REGRESSED.value
+    ]
+    model_records = [
+        item for item in records if not item["perturbator"].get("fallback_used")
+    ]
+    deltas = [
+        float(item.score_delta)
+        for item in model_evaluated
+        if item.score_delta is not None
+    ]
+    positive_gain = sum(max(0.0, delta) for delta in deltas)
+    best_deltas = [
+        float(record["outcome"]["best_score_delta"])
+        for record in model_records
+        if record["outcome"].get("best_score_delta") is not None
+    ]
+    improving_attempts = sum(
+        any(
+            lifecycle.source is VariantSource.PERTURBATOR
+            and lifecycle.purpose is TaskPurpose.OPTIMIZATION
+            and lifecycle.outcome is VariantOutcome.IMPROVED
+            for lifecycle in _record_lifecycles(record)
+        )
+        for record in model_records
+    )
+    new_cells = sum(
+        int(item["outcome"].get("new_cells_created", 0)) for item in model_records
+    )
+    total_tokens = sum(
+        _total_tokens(item["perturbator"].get("usage")) for item in model_records
+    )
+    optimization_gap = round(
+        optimization["end_to_end_improvement_rate"]
+        - OPTIMIZATION_IMPROVEMENT_TARGET,
+        4,
+    )
+    return {
+        "attempts": len(records),
+        "model_attempts": len(model_records),
+        "by_purpose": by_purpose,
+        "optimization_target": OPTIMIZATION_IMPROVEMENT_TARGET,
+        "optimization_produced": optimization["produced"],
+        "optimization_denominator_failures": (
+            optimization[VariantOutcome.INVALID.value]
+            + optimization[VariantOutcome.TRUNCATED.value]
+            + optimization[VariantOutcome.UNSCORED.value]
+        ),
+        "optimization_end_to_end_rate": optimization[
+            "end_to_end_improvement_rate"
+        ],
+        "optimization_valid_rate": optimization["valid_rate"],
+        "optimization_conditional_rate": optimization[
+            "conditional_improvement_rate"
+        ],
+        "optimization_target_gap": optimization_gap,
+        "optimization_target_met": optimization_gap >= 0,
+        "discovery_success_rate": _ratio(
+            discovery_successes,
+            discovery["produced"],
+        ),
+        "diagnostic_effect_rate": _ratio(
+            diagnostic_effects,
+            diagnostic["produced"],
+        ),
+        "control_variance": OutcomePolicy.control_variance(variants),
+        "fallback_attempts": len(records) - len(model_records),
+        "errored_attempts": sum(
+            1 for item in records if item["perturbator"].get("error")
+        ),
+        "attempt_improvement_rate": _ratio(improving_attempts, len(model_records)),
+        "archive_yield": _ratio(retained, len(model_evaluated)),
+        "new_cell_yield": _ratio(new_cells, len(model_evaluated)),
+        "mean_score_delta": _mean(deltas),
+        "mean_best_score_delta": _mean(best_deltas),
+        "best_score_delta": round(max(best_deltas), 3) if best_deltas else None,
+        "positive_score_gain": round(positive_gain, 3),
+        "positive_gain_per_target_call": _ratio(
+            positive_gain,
+            len(model_evaluated),
+        ),
+        "perturbator_total_tokens": total_tokens,
+        "positive_gain_per_1k_perturbator_tokens": (
+            _ratio(positive_gain * 1000.0, total_tokens) if total_tokens else None
+        ),
+        "final_archive_retained": retained,
+        "new_cells_created": new_cells,
+        "cell_best_improvements": sum(
+            int(item["outcome"].get("cell_best_improvements", 0))
+            for item in model_records
+        ),
+        "cell_best_score_gain": round(
+            sum(
+                float(item["outcome"].get("cell_best_score_gain", 0.0) or 0.0)
+                for item in model_records
+            ),
+            3,
+        ),
+        "global_best_delta": round(
+            sum(
+                float(item["outcome"].get("global_best_delta", 0.0) or 0.0)
+                for item in model_records
+            ),
+            3,
+        ),
+        "distinct_parent_count": len(
+            {str(item["parent"].get("candidate_id", "")) for item in records}
+        ),
+        "validation_tiers": _sum_counter_field(records, "validation_tiers"),
+    }
+
+
+def _aggregate_groups(
+    groups: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    return {key: _aggregate(records) for key, records in sorted(groups.items())}
+
+
+def _rank_parent_cells(
+    aggregates: dict[str, dict[str, Any]],
+    *,
+    reverse: bool,
+) -> list[dict[str, Any]]:
+    ranked = sorted(
+        aggregates.items(),
+        key=lambda item: (
+            float(item[1].get("positive_gain_per_target_call", 0.0) or 0.0),
+            float(item[1].get("mean_best_score_delta", 0.0) or 0.0),
+            int(item[1].get("attempts", 0)),
+            item[0],
+        ),
+        reverse=reverse,
+    )
+    return [
+        {
+            "cell": cell,
+            "attempts": metrics["attempts"],
+            "positive_gain_per_target_call": metrics[
+                "positive_gain_per_target_call"
+            ],
+            "mean_best_score_delta": metrics["mean_best_score_delta"],
+            "optimization_end_to_end_rate": metrics[
+                "optimization_end_to_end_rate"
+            ],
+            "archive_yield": metrics["archive_yield"],
+            "new_cell_yield": metrics["new_cell_yield"],
+        }
+        for cell, metrics in ranked[:5]
+    ]
+
+
+def _aggregate_operators(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[VariantLifecycle]] = defaultdict(list)
+    for lifecycle in _all_lifecycles(records):
+        if (
+            lifecycle.source is not VariantSource.PERTURBATOR
+            and lifecycle.purpose is not TaskPurpose.CONTROL
+        ):
+            continue
+        grouped[lifecycle.operator_id].append(lifecycle)
+    result: dict[str, dict[str, Any]] = {}
+    for operator_id, variants in sorted(grouped.items()):
+        purposes = sorted({item.purpose.value for item in variants})
+        outcomes = Counter(
+            item.outcome.value for item in variants if item.outcome is not None
+        )
+        comparable = sum(
+            outcomes[outcome.value]
+            for outcome in (
+                VariantOutcome.IMPROVED,
+                VariantOutcome.RETAINED,
+                VariantOutcome.REGRESSED,
+            )
+        )
+        result[operator_id] = {
+            "purposes": purposes,
+            "sources": dict(
+                sorted(Counter(item.source.value for item in variants).items())
+            ),
+            "produced": len(variants),
+            "evaluated": sum(
+                item.stage is VariantStage.EVALUATED for item in variants
+            ),
+            "comparable": comparable,
+            **{outcome.value: outcomes[outcome.value] for outcome in VariantOutcome},
+            "end_to_end_improvement_rate": _ratio(
+                outcomes[VariantOutcome.IMPROVED.value],
+                len(variants),
+            ),
+            "conditional_improvement_rate": _ratio(
+                outcomes[VariantOutcome.IMPROVED.value],
+                comparable,
+            ),
+        }
+    return result
+
+
+def _operator_outcomes(
+    variants: list[VariantLifecycle],
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[VariantLifecycle]] = defaultdict(list)
+    for item in variants:
+        grouped[item.operator_id].append(item)
+    result: dict[str, dict[str, Any]] = {}
+    for operator_id, items in sorted(grouped.items()):
+        outcomes = Counter(
+            item.outcome.value for item in items if item.outcome is not None
+        )
+        result[operator_id] = {
+            "purposes": sorted({item.purpose.value for item in items}),
+            "sources": dict(
+                sorted(Counter(item.source.value for item in items).items())
+            ),
+            "produced": len(items),
+            "evaluated": sum(item.stage is VariantStage.EVALUATED for item in items),
+            **{outcome.value: outcomes[outcome.value] for outcome in VariantOutcome},
+        }
+    return result
+
+
+def _all_lifecycles(records: Iterable[dict[str, Any]]) -> list[VariantLifecycle]:
+    return [
+        lifecycle
+        for record in records
+        for lifecycle in _record_lifecycles(record)
+    ]
+
+
+def _record_lifecycles(record: dict[str, Any]) -> list[VariantLifecycle]:
+    return [
+        VariantLifecycle.from_jsonable(item)
+        for item in record.get("variant_lifecycles", ())
+    ]
+
+
+def _task_from_metadata(metadata: Any) -> MutationTask | None:
+    if not isinstance(metadata, dict):
+        return None
+    return _task_from_mapping(metadata)
+
+
+def _task_from_mapping(data: dict[str, Any]) -> MutationTask | None:
+    task_data = data.get("mutation_task")
+    if not isinstance(task_data, dict):
+        return None
+    return MutationTask.from_jsonable(task_data)
+
+
+def _purpose_from_metadata(metadata: Any) -> TaskPurpose:
+    if not isinstance(metadata, dict):
+        return TaskPurpose.OPTIMIZATION
+    raw_purpose = metadata.get("task_purpose") or metadata.get("purpose")
+    if raw_purpose is None:
+        return TaskPurpose.OPTIMIZATION
+    try:
+        return TaskPurpose(str(raw_purpose))
+    except ValueError as exc:
+        raise ValueError(f"Unknown variant task purpose: {raw_purpose}") from exc
+
+
+def _evaluation_purpose(evaluation: dict[str, Any]) -> TaskPurpose:
+    return _purpose_from_metadata(evaluation.get("metadata"))
+
+
+def _unassigned_output_purpose(audit: dict[str, Any]) -> TaskPurpose:
+    purposes = []
+    for task_data in audit.get("mutation_tasks") or ():
+        if not isinstance(task_data, dict):
+            continue
+        task = MutationTask.from_jsonable(task_data)
+        if not task.is_control:
+            purposes.append(task.purpose)
+    if TaskPurpose.OPTIMIZATION in purposes:
+        return TaskPurpose.OPTIMIZATION
+    return purposes[0] if purposes else TaskPurpose.OPTIMIZATION
+
+
+def _comparison(evaluation: dict[str, Any]) -> dict[str, Any]:
+    metadata = evaluation.get("metadata")
+    comparison = (
+        metadata.get("parent_child_comparison")
+        if isinstance(metadata, dict)
+        else None
+    )
+    return comparison if isinstance(comparison, dict) else {}
 
 
 def _archive_credits(
@@ -550,359 +939,6 @@ def _archive_credits(
     return dict(credits), global_credit
 
 
-def _aggregate_groups(
-    groups: dict[str, list[dict[str, Any]]],
-) -> dict[str, dict[str, Any]]:
-    return {
-        key: _aggregate(records)
-        for key, records in sorted(groups.items())
-    }
-
-
-def _rank_parent_cells(
-    aggregates: dict[str, dict[str, Any]],
-    *,
-    reverse: bool,
-) -> list[dict[str, Any]]:
-    ranked = sorted(
-        aggregates.items(),
-        key=lambda item: (
-            float(item[1].get("positive_gain_per_target_call", 0.0) or 0.0),
-            float(item[1].get("mean_best_score_delta", 0.0) or 0.0),
-            int(item[1].get("attempts", 0)),
-            item[0],
-        ),
-        reverse=reverse,
-    )
-    return [
-        {
-            "cell": cell,
-            "attempts": metrics["attempts"],
-            "positive_gain_per_target_call": metrics[
-                "positive_gain_per_target_call"
-            ],
-            "mean_best_score_delta": metrics["mean_best_score_delta"],
-            "archive_yield": metrics["archive_yield"],
-            "new_cell_yield": metrics["new_cell_yield"],
-        }
-        for cell, metrics in ranked[:5]
-    ]
-
-
-def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
-    attempts = len(records)
-    produced = sum(int(item["perturbator"].get("produced", 0)) for item in records)
-    accepted = sum(int(item["perturbator"].get("accepted", 0)) for item in records)
-    evaluated = sum(int(item["outcome"].get("evaluated", 0)) for item in records)
-    non_error = sum(
-        int(item["outcome"].get("non_error_children", 0)) for item in records
-    )
-    improved = sum(
-        int(item["outcome"].get("improved_children", 0)) for item in records
-    )
-    comparable = sum(
-        int(
-            item["outcome"].get(
-                "comparable_children",
-                item["outcome"].get("non_error_children", 0),
-            )
-        )
-        for item in records
-    )
-    retained_comparisons = sum(
-        int(item["outcome"].get("retained_children", 0)) for item in records
-    )
-    regressed_comparisons = sum(
-        int(item["outcome"].get("regressed_children", 0)) for item in records
-    )
-    unscored = sum(
-        int(item["outcome"].get("unscored_children", 0)) for item in records
-    )
-    validation_tiers = _sum_counter_field(records, "validation_tiers")
-    improvement_goal_validation_tiers = _sum_counter_field(
-        records,
-        "improvement_goal_validation_tiers",
-    )
-    goal_evaluated = sum(
-        int(item["outcome"].get("improvement_goal_children", 0))
-        for item in records
-    )
-    goal_comparable = sum(
-        int(item["outcome"].get("improvement_goal_comparable_children", 0))
-        for item in records
-    )
-    goal_improved = sum(
-        int(item["outcome"].get("improvement_goal_improved_children", 0))
-        for item in records
-    )
-    goal_retained = sum(
-        int(item["outcome"].get("improvement_goal_retained_children", 0))
-        for item in records
-    )
-    goal_regressed = sum(
-        int(item["outcome"].get("improvement_goal_regressed_children", 0))
-        for item in records
-    )
-    goal_unscored = sum(
-        int(item["outcome"].get("improvement_goal_unscored_children", 0))
-        for item in records
-    )
-    retained = sum(
-        int(item["outcome"].get("final_archive_retained", 0)) for item in records
-    )
-    new_cells = sum(
-        int(item["outcome"].get("new_cells_created", 0)) for item in records
-    )
-    budget_truncated = sum(
-        int(item["outcome"].get("budget_truncated", 0)) for item in records
-    )
-    improving_attempts = sum(
-        1
-        for item in records
-        if float(item["outcome"].get("best_score_delta", 0.0) or 0.0) > 0
-    )
-    cell_best_improvements = sum(
-        int(item["outcome"].get("cell_best_improvements", 0))
-        for item in records
-    )
-    cell_best_score_gain = sum(
-        float(item["outcome"].get("cell_best_score_gain", 0.0) or 0.0)
-        for item in records
-    )
-    global_best_delta = sum(
-        float(item["outcome"].get("global_best_delta", 0.0) or 0.0)
-        for item in records
-    )
-    delta_sum = sum(
-        float(item["outcome"].get("score_delta_sum", 0.0) or 0.0)
-        for item in records
-    )
-    positive_gain = sum(
-        float(item["outcome"].get("positive_score_gain", 0.0) or 0.0)
-        for item in records
-    )
-    best_deltas = [
-        float(item["outcome"]["best_score_delta"])
-        for item in records
-        if item["outcome"].get("best_score_delta") is not None
-    ]
-    model_records = [
-        item for item in records if not item["perturbator"].get("fallback_used")
-    ]
-    model_produced = sum(
-        int(item["perturbator"].get("produced", 0)) for item in model_records
-    )
-    model_accepted = sum(
-        int(item["perturbator"].get("accepted", 0)) for item in model_records
-    )
-    model_evaluated = sum(
-        int(item["outcome"].get("evaluated", 0)) for item in model_records
-    )
-    model_non_error = sum(
-        int(item["outcome"].get("non_error_children", 0))
-        for item in model_records
-    )
-    model_improved = sum(
-        int(item["outcome"].get("improved_children", 0))
-        for item in model_records
-    )
-    model_comparable = sum(
-        int(
-            item["outcome"].get(
-                "comparable_children",
-                item["outcome"].get("non_error_children", 0),
-            )
-        )
-        for item in model_records
-    )
-    model_retained_comparisons = sum(
-        int(item["outcome"].get("retained_children", 0))
-        for item in model_records
-    )
-    model_regressed_comparisons = sum(
-        int(item["outcome"].get("regressed_children", 0))
-        for item in model_records
-    )
-    model_unscored = sum(
-        int(item["outcome"].get("unscored_children", 0))
-        for item in model_records
-    )
-    model_goal_evaluated = sum(
-        int(item["outcome"].get("improvement_goal_children", 0))
-        for item in model_records
-    )
-    model_goal_comparable = sum(
-        int(item["outcome"].get("improvement_goal_comparable_children", 0))
-        for item in model_records
-    )
-    model_goal_improved = sum(
-        int(item["outcome"].get("improvement_goal_improved_children", 0))
-        for item in model_records
-    )
-    model_goal_retained = sum(
-        int(item["outcome"].get("improvement_goal_retained_children", 0))
-        for item in model_records
-    )
-    model_goal_regressed = sum(
-        int(item["outcome"].get("improvement_goal_regressed_children", 0))
-        for item in model_records
-    )
-    model_goal_unscored = sum(
-        int(item["outcome"].get("improvement_goal_unscored_children", 0))
-        for item in model_records
-    )
-    model_retained = sum(
-        int(item["outcome"].get("final_archive_retained", 0))
-        for item in model_records
-    )
-    model_new_cells = sum(
-        int(item["outcome"].get("new_cells_created", 0))
-        for item in model_records
-    )
-    model_delta_sum = sum(
-        float(item["outcome"].get("score_delta_sum", 0.0) or 0.0)
-        for item in model_records
-    )
-    model_positive_gain = sum(
-        float(item["outcome"].get("positive_score_gain", 0.0) or 0.0)
-        for item in model_records
-    )
-    model_best_deltas = [
-        float(item["outcome"]["best_score_delta"])
-        for item in model_records
-        if item["outcome"].get("best_score_delta") is not None
-    ]
-    model_improving_attempts = sum(
-        1
-        for item in model_records
-        if float(item["outcome"].get("best_score_delta", 0.0) or 0.0) > 0
-    )
-    total_tokens = sum(
-        _total_tokens(item["perturbator"].get("usage"))
-        for item in model_records
-    )
-    return {
-        "attempts": attempts,
-        "model_attempts": len(model_records),
-        "produced": produced,
-        "accepted": accepted,
-        "budget_truncated": budget_truncated,
-        "evaluated": evaluated,
-        "non_error_children": non_error,
-        "improved_children": improved,
-        "comparable_children": comparable,
-        "retained_children": retained_comparisons,
-        "regressed_children": regressed_comparisons,
-        "unscored_children": unscored,
-        "validation_tiers": validation_tiers,
-        "improvement_goal_children": goal_evaluated,
-        "improvement_goal_comparable_children": goal_comparable,
-        "improvement_goal_improved_children": goal_improved,
-        "improvement_goal_retained_children": goal_retained,
-        "improvement_goal_regressed_children": goal_regressed,
-        "improvement_goal_unscored_children": goal_unscored,
-        "improvement_goal_validation_tiers": improvement_goal_validation_tiers,
-        "final_archive_retained": retained,
-        "new_cells_created": new_cells,
-        "distinct_parent_count": len(
-            {
-                str(item["parent"].get("candidate_id", ""))
-                for item in records
-            }
-        ),
-        "improving_attempts": model_improving_attempts,
-        "attempt_improvement_rate": _ratio(
-            model_improving_attempts,
-            len(model_records),
-        ),
-        "cell_best_improvements": cell_best_improvements,
-        "cell_best_score_gain": round(cell_best_score_gain, 3),
-        "global_best_delta": round(global_best_delta, 3),
-        "fallback_attempts": sum(
-            1 for item in records if item["perturbator"].get("fallback_used")
-        ),
-        "errored_attempts": sum(
-            1 for item in records if item["perturbator"].get("error")
-        ),
-        "validity_rate": _ratio(model_accepted, model_produced),
-        "evaluation_yield": _ratio(model_non_error, model_evaluated),
-        "improvement_rate": _ratio(model_improved, model_comparable),
-        "improvement_goal_rate": _ratio(
-            model_goal_improved,
-            model_goal_comparable,
-        ),
-        "improvement_goal_retention_rate": _ratio(
-            model_goal_improved + model_goal_retained,
-            model_goal_comparable,
-        ),
-        "improvement_goal_regression_rate": _ratio(
-            model_goal_regressed,
-            model_goal_comparable,
-        ),
-        "improvement_goal_unscored_rate": _ratio(
-            model_goal_unscored,
-            model_goal_evaluated,
-        ),
-        "retention_rate": _ratio(
-            model_improved + model_retained_comparisons,
-            model_comparable,
-        ),
-        "regression_rate": _ratio(model_regressed_comparisons, model_comparable),
-        "unscored_rate": _ratio(model_unscored, model_evaluated),
-        "archive_yield": _ratio(model_retained, model_evaluated),
-        "new_cell_yield": _ratio(model_new_cells, model_evaluated),
-        "mean_score_delta": _ratio(model_delta_sum, model_non_error),
-        "mean_best_score_delta": _mean(model_best_deltas),
-        "best_score_delta": (
-            round(max(model_best_deltas), 3)
-            if model_best_deltas
-            else None
-        ),
-        "positive_score_gain": round(model_positive_gain, 3),
-        "positive_gain_per_target_call": _ratio(
-            model_positive_gain,
-            model_evaluated,
-        ),
-        "search_validity_rate": _ratio(accepted, produced),
-        "search_improving_attempts": improving_attempts,
-        "search_attempt_improvement_rate": _ratio(
-            improving_attempts,
-            attempts,
-        ),
-        "search_improvement_rate": _ratio(improved, comparable),
-        "search_improvement_goal_rate": _ratio(goal_improved, goal_comparable),
-        "search_improvement_goal_retention_rate": _ratio(
-            goal_improved + goal_retained,
-            goal_comparable,
-        ),
-        "search_improvement_goal_regression_rate": _ratio(
-            goal_regressed,
-            goal_comparable,
-        ),
-        "search_improvement_goal_unscored_rate": _ratio(
-            goal_unscored,
-            goal_evaluated,
-        ),
-        "search_retention_rate": _ratio(
-            improved + retained_comparisons,
-            comparable,
-        ),
-        "search_regression_rate": _ratio(regressed_comparisons, comparable),
-        "search_unscored_rate": _ratio(unscored, evaluated),
-        "search_archive_yield": _ratio(retained, evaluated),
-        "search_new_cell_yield": _ratio(new_cells, evaluated),
-        "search_mean_score_delta": _ratio(delta_sum, non_error),
-        "search_mean_best_score_delta": _mean(best_deltas),
-        "search_positive_score_gain": round(positive_gain, 3),
-        "perturbator_total_tokens": total_tokens,
-        "positive_gain_per_1k_perturbator_tokens": (
-            _ratio(model_positive_gain * 1000.0, total_tokens)
-            if total_tokens
-            else None
-        ),
-    }
-
-
 def _compact_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(plan, dict):
         return {}
@@ -929,12 +965,10 @@ def _evaluation_attempt_id(evaluation: dict[str, Any]) -> str:
 def _validation_tier(metadata: Any) -> str:
     if not isinstance(metadata, dict):
         return "unknown"
-    transition = metadata.get("transition_validation")
-    if isinstance(transition, dict) and transition.get("tier"):
-        return str(transition["tier"])
-    validation = metadata.get("validation")
-    if isinstance(validation, dict) and validation.get("tier"):
-        return str(validation["tier"])
+    for key in ("transition_validation", "validation"):
+        validation = metadata.get(key)
+        if isinstance(validation, dict) and validation.get("tier"):
+            return str(validation["tier"])
     return "unknown"
 
 
@@ -955,11 +989,8 @@ def _sum_counter_field(
     return dict(sorted(counter.items()))
 
 
-def _score_total(evaluation: dict[str, Any]) -> float:
-    try:
-        return float(evaluation.get("score", {}).get("total", 0) or 0)
-    except (TypeError, ValueError):
-        return 0.0
+def _score_total(evaluation: dict[str, Any]) -> float | None:
+    return ScoreEvidence.from_evaluation(evaluation).total
 
 
 def _mean(values: list[float]) -> float | None:

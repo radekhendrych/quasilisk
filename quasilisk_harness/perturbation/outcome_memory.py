@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Any
 
 from quasilisk_harness.perturbation.comparison import score_quality
-from quasilisk_harness.perturbation.models import PerturbationPlan
+from quasilisk_harness.perturbation.models import PerturbationPlan, TaskPurpose
 
 
 VALID_PARENT_PLAN_MEMORY_MODES = {"block", "penalize"}
@@ -156,7 +156,7 @@ class ParentPlanOutcomeMemory:
             metadata = evaluation.get("metadata")
             if (
                 isinstance(metadata, dict)
-                and metadata.get("evaluation_role") == "control"
+                and metadata.get("task_purpose") == TaskPurpose.CONTROL.value
             ):
                 continue
             plan_data = (

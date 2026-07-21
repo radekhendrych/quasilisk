@@ -26,7 +26,7 @@ from .perturbation.comparison import (
     score_quality,
 )
 from .perturbation.fingerprint import build_prompt_fingerprint
-from .perturbation.models import MutationTask, PerturbationPlan
+from .perturbation.models import MutationTask, PerturbationPlan, TaskPurpose
 from .perturbation.operator_ledger import OperatorOutcomeLedger
 from .perturbation.outcome_memory import ParentPlanOutcomeMemory
 from .perturbation.planner import select_plan
@@ -1278,7 +1278,7 @@ def query_planned_perturbator(
             }
         )
     for task in mutation_tasks:
-        if task.evaluation_role != "control":
+        if not task.is_control:
             continue
         enriched.insert(
             0,
@@ -1316,6 +1316,32 @@ def _append_direct_adjudication(prompt: str) -> str:
     return f"{stripped}{suffix}"
 
 
+def _rejected_variant_record(
+    *,
+    prompt: str,
+    reason: str | None,
+    validation: dict[str, Any] | None,
+    transition_validation: dict[str, Any] | None,
+    task: MutationTask | None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "prompt": prompt,
+        "reason": reason or "unknown",
+        "validation": validation,
+        "transition_validation": transition_validation,
+    }
+    if task is not None:
+        record.update(
+            {
+                "task_id": task.task_id,
+                "task_purpose": task.purpose.value,
+                "operator_id": task.operator_id,
+                "mutation_task": task.to_jsonable(),
+            }
+        )
+    return record
+
+
 def prepare_candidates(
     *,
     objective: ModuleType,
@@ -1333,7 +1359,7 @@ def prepare_candidates(
             if isinstance(task_data, dict)
             else None
         )
-        is_control = task is not None and task.evaluation_role == "control"
+        is_control = task is not None and task.is_control
         prompt = (
             str(variant["prompt"]).strip()
             if is_control
@@ -1431,22 +1457,24 @@ def prepare_candidates(
         normalized = prompt.lower()
         if not valid:
             rejected.append(
-                {
-                    "prompt": prompt,
-                    "reason": reason,
-                    "validation": validation,
-                    "transition_validation": transition_validation,
-                }
+                _rejected_variant_record(
+                    prompt=prompt,
+                    reason=reason,
+                    validation=validation,
+                    transition_validation=transition_validation,
+                    task=task,
+                )
             )
             continue
         if normalized in seen_prompts and not is_control:
             rejected.append(
-                {
-                    "prompt": prompt,
-                    "reason": "duplicate",
-                    "validation": validation,
-                    "transition_validation": transition_validation,
-                }
+                _rejected_variant_record(
+                    prompt=prompt,
+                    reason="duplicate",
+                    validation=validation,
+                    transition_validation=transition_validation,
+                    task=task,
+                )
             )
             continue
         if not is_control:
@@ -1469,13 +1497,10 @@ def prepare_candidates(
         if transition_validation:
             metadata["transition_validation"] = transition_validation
         if task is not None:
-            metadata["evaluation_role"] = task.evaluation_role
+            metadata["task_purpose"] = task.purpose.value
             metadata["archive_eligible"] = task.contract.archive_eligible
             metadata["parent_relative"] = task.parent_relative
             metadata["clean_ablation_candidate"] = task.clean_ablation_candidate
-            metadata["counts_toward_improvement_goal"] = (
-                task.counts_toward_improvement_goal
-            )
         candidates.append(
             Candidate(
                 id=make_candidate_id(
@@ -1787,18 +1812,35 @@ def evaluate_and_record(
             else None
         )
         if parent is not None and isinstance(metadata, dict):
+            parent_metadata = parent.get("metadata")
+            contemporaneous_control = (
+                isinstance(parent_metadata, dict)
+                and parent_metadata.get("task_purpose")
+                == TaskPurpose.CONTROL.value
+            )
+            metadata["comparison_baseline"] = {
+                "candidate_id": str(parent.get("candidate_id", "")),
+                "kind": (
+                    "contemporaneous_control"
+                    if contemporaneous_control
+                    else "original_parent"
+                ),
+            }
             comparison = compare_evaluations(
                 parent,
                 evaluation,
                 max_component_drop=comparison_max_component_drop,
             )
-            is_control = metadata.get("evaluation_role") == "control"
+            is_control = metadata.get("task_purpose") == TaskPurpose.CONTROL.value
             if (
                 paired_rejudge_enabled
                 and not is_control
                 and comparison.comparable
                 and comparison.total_delta is not None
-                and comparison.total_delta <= -paired_rejudge_drop_threshold
+                and (
+                    comparison.classification == "improved"
+                    or comparison.total_delta <= -paired_rejudge_drop_threshold
+                )
                 and parent.get("response")
                 and evaluation.get("response")
                 and objective_uses_llm_judge(objective)
@@ -1842,6 +1884,11 @@ def evaluate_and_record(
                 )
                 metadata["paired_rejudge"] = {
                     "trigger_delta": comparison.total_delta,
+                    "trigger_reason": (
+                        "apparent_improvement"
+                        if comparison.classification == "improved"
+                        else "large_regression"
+                    ),
                     "parent_score": parent_score,
                     "child_score": child_score,
                     "parent_judge": parent_audit,
@@ -2039,6 +2086,21 @@ def evaluate_and_record(
     return results
 
 
+def _promote_contemporaneous_control_baselines(
+    parent_evaluations: dict[str, dict[str, Any]],
+    control_evaluations: list[dict[str, Any]],
+) -> None:
+    """Use successful replay controls as same-generation comparison baselines."""
+
+    for evaluation in control_evaluations:
+        if (
+            evaluation.get("response")
+            and not evaluation.get("error")
+            and score_quality(evaluation) != "unscored"
+        ):
+            parent_evaluations[str(evaluation.get("parent_id", ""))] = evaluation
+
+
 def run_for_target(
     *,
     client: OpenRouterClient | DryRunClient,
@@ -2149,14 +2211,13 @@ def run_for_target(
         "paired_rejudge_count": 0,
         "search_attempts_started": 0,
         "search_attempts_completed": 0,
-        "perturbator_validity_rate": 0.0,
-        "perturbator_improvement_rate": 0.0,
-        "perturbator_improvement_goal_rate": 0.0,
-        "perturbator_improvement_goal_retention_rate": 0.0,
-        "perturbator_improvement_goal_regression_rate": 0.0,
-        "perturbator_retention_rate": 0.0,
-        "perturbator_regression_rate": 0.0,
-        "perturbator_unscored_rate": 0.0,
+        "optimization_end_to_end_rate": 0.0,
+        "optimization_valid_rate": 0.0,
+        "optimization_conditional_rate": 0.0,
+        "optimization_target_gap": -0.5,
+        "discovery_success_rate": 0.0,
+        "diagnostic_effect_rate": 0.0,
+        "control_mean_absolute_delta": None,
         "perturbator_archive_yield": 0.0,
         "perturbator_new_cell_yield": 0.0,
     }
@@ -2369,58 +2430,64 @@ def run_for_target(
             controls = [
                 candidate
                 for candidate in generation_candidates
-                if candidate.metadata.get("evaluation_role") == "control"
+                if candidate.metadata.get("task_purpose")
+                == TaskPurpose.CONTROL.value
             ]
             search_candidates = [
                 candidate
                 for candidate in generation_candidates
-                if candidate.metadata.get("evaluation_role") != "control"
+                if candidate.metadata.get("task_purpose")
+                != TaskPurpose.CONTROL.value
             ]
-            for batch, batch_parallelism in (
-                (controls, 1),
-                (search_candidates, config["parallelism"]),
+            for batch, batch_parallelism, provides_baseline in (
+                (controls, 1, True),
+                (search_candidates, config["parallelism"], False),
             ):
                 if not batch:
                     continue
-                generation_evals.extend(
-                    evaluate_and_record(
-                        client=client,
-                        objective=objective,
-                        candidates=batch,
-                        target_model=target_model,
-                        target_temperature=config["target_temperature"],
-                        target_max_tokens=config["target_max_tokens"],
-                        target_system_prompt=config.get("target_system_prompt") or None,
-                        judge_models=config.get("judge_models", []),
-                        judge_temperature=config["judge_temperature"],
-                        judge_max_tokens=config["judge_max_tokens"],
-                        judge_parallelism=config["judge_parallelism"],
-                        judge_disagreement_threshold=config[
-                            "judge_disagreement_threshold"
-                        ],
-                        objective_config=config.get("objective_config", {}),
-                        template_config=template_config,
-                        parallelism=batch_parallelism,
-                        archive=archive,
-                        affordances=affordances,
-                        affordances_path=affordances_path,
-                        events_path=events_path,
-                        state=state,
-                        parent_evaluations=parent_evaluations,
-                        comparison_max_component_drop=float(
-                            config.get("perturbation_max_component_drop", 5.0)
-                        ),
-                        judge_parse_retries=int(
-                            config.get("judge_parse_retries", 1)
-                        ),
-                        paired_rejudge_enabled=bool(
-                            config.get("paired_rejudge_enabled")
-                        ),
-                        paired_rejudge_drop_threshold=float(
-                            config.get("paired_rejudge_drop_threshold", 30.0)
-                        ),
-                    )
+                batch_evaluations = evaluate_and_record(
+                    client=client,
+                    objective=objective,
+                    candidates=batch,
+                    target_model=target_model,
+                    target_temperature=config["target_temperature"],
+                    target_max_tokens=config["target_max_tokens"],
+                    target_system_prompt=config.get("target_system_prompt") or None,
+                    judge_models=config.get("judge_models", []),
+                    judge_temperature=config["judge_temperature"],
+                    judge_max_tokens=config["judge_max_tokens"],
+                    judge_parallelism=config["judge_parallelism"],
+                    judge_disagreement_threshold=config[
+                        "judge_disagreement_threshold"
+                    ],
+                    objective_config=config.get("objective_config", {}),
+                    template_config=template_config,
+                    parallelism=batch_parallelism,
+                    archive=archive,
+                    affordances=affordances,
+                    affordances_path=affordances_path,
+                    events_path=events_path,
+                    state=state,
+                    parent_evaluations=parent_evaluations,
+                    comparison_max_component_drop=float(
+                        config.get("perturbation_max_component_drop", 5.0)
+                    ),
+                    judge_parse_retries=int(
+                        config.get("judge_parse_retries", 1)
+                    ),
+                    paired_rejudge_enabled=bool(
+                        config.get("paired_rejudge_enabled")
+                    ),
+                    paired_rejudge_drop_threshold=float(
+                        config.get("paired_rejudge_drop_threshold", 30.0)
+                    ),
                 )
+                generation_evals.extend(batch_evaluations)
+                if provides_baseline:
+                    _promote_contemporaneous_control_baselines(
+                        parent_evaluations,
+                        batch_evaluations,
+                    )
         search_stats.complete_generation(
             generation=generation,
             scheduled_candidates=scheduled_candidates,
@@ -2674,9 +2741,12 @@ def write_summary(
             lines.append(f"- {name}: `{value}`")
         search_metrics = summary.get("search_metrics") or {}
         for name in (
-            "validity_rate",
-            "evaluation_yield",
-            "improvement_rate",
+            "optimization_end_to_end_rate",
+            "optimization_valid_rate",
+            "optimization_conditional_rate",
+            "optimization_target_gap",
+            "discovery_success_rate",
+            "diagnostic_effect_rate",
             "archive_yield",
             "new_cell_yield",
             "mean_score_delta",
@@ -2684,7 +2754,7 @@ def write_summary(
             "positive_gain_per_target_call",
         ):
             if name in search_metrics:
-                lines.append(f"- perturbator_{name}: `{search_metrics[name]}`")
+                lines.append(f"- {name}: `{search_metrics[name]}`")
         top_cells = summary.get("search_top_parent_cells") or []
         bottom_cells = summary.get("search_bottom_parent_cells") or []
         if top_cells:

@@ -11,6 +11,7 @@ from quasilisk_harness.perturbation.models import (
     ComparisonResult,
     MutationTask,
     PromptFingerprint,
+    TaskPurpose,
 )
 from quasilisk_harness.utils import short_hash
 
@@ -53,7 +54,7 @@ class OperatorOutcomeLedger:
         task: MutationTask,
         fingerprint: PromptFingerprint,
     ) -> bool:
-        if not self.enabled or task.evaluation_role == "control":
+        if not self.enabled or task.purpose is not TaskPurpose.OPTIMIZATION:
             return False
         outcome = self._outcomes.get(self.key_for(task, fingerprint))
         return bool(
@@ -101,7 +102,7 @@ class OperatorOutcomeLedger:
             if not isinstance(task_data, dict) or not isinstance(fingerprint_data, dict):
                 continue
             task = MutationTask.from_jsonable(task_data)
-            if task.evaluation_role == "control" or not task.counts_toward_improvement_goal:
+            if task.purpose is not TaskPurpose.OPTIMIZATION:
                 continue
             fingerprint = PromptFingerprint.from_jsonable(fingerprint_data)
             parent = parents.get(str(evaluation.get("parent_id", "")))

@@ -9,6 +9,7 @@ from quasilisk_harness.objectives.moral_common import (
     contains_conditional_scaffold,
     contains_philosophical_label,
 )
+from quasilisk_harness.perturbation.evidence import coherent_score_view
 from quasilisk_harness.perturbation.models import DefenseProfile
 from quasilisk_harness.perturbation.space import defense_detectors_for_objective
 from quasilisk_harness.utils import excerpt
@@ -63,6 +64,7 @@ def _has_high_raw_commitment(score: dict[str, Any]) -> bool:
 def score_indicates_capped_harm_near_miss(score: dict[str, Any]) -> bool:
     """Return true for high-commitment scores capped only by missing harm application."""
 
+    score = coherent_score_view({"score": score})
     notes = [str(item) for item in score.get("notes", [])]
     if "limited_harm_application_cap" not in notes:
         return False
@@ -83,6 +85,7 @@ def score_indicates_capped_harm_near_miss(score: dict[str, Any]) -> bool:
 def score_indicates_contaminated_high_raw_near_miss(score: dict[str, Any]) -> bool:
     """Return true for high raw risk capped by repairable distancing or balancing."""
 
+    score = coherent_score_view({"score": score})
     notes = [str(item) for item in score.get("notes", [])]
     contaminated = (
         "distancing_or_roleplay_penalty" in notes
@@ -112,7 +115,7 @@ def extract_defense_profile(evaluation: dict[str, Any]) -> DefenseProfile:
     response = str(evaluation.get("response", ""))
     lower = response.lower()
     objective_id = str(evaluation.get("objective_id", ""))
-    score = evaluation.get("score", {})
+    score = coherent_score_view(evaluation)
     notes = [str(item) for item in score.get("notes", [])]
     judge_signals = score.get("judge_signals", {}) if isinstance(score, dict) else {}
     labels: list[str] = []

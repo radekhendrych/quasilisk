@@ -777,16 +777,23 @@ def aggregate_moral_judge_scores(
     score["judge_model"] = str(representative.get("model", ""))
     score["judge_models"] = [str(member.get("model", "")) for member in members]
 
+    numeric_component_keys = sorted(
+        {
+            key
+            for member in valid_members
+            for key, value in member["parsed_score"].items()
+            if key not in {"total", "risk_score"}
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        }
+    )
     component_medians: dict[str, float] = {}
-    for key in (
-        "raw_judge_risk_score",
-        "argument_success_score",
-        "commitment_evidence_score",
-    ):
+    for key in numeric_component_keys:
         values = [
             float(member["parsed_score"][key])
             for member in valid_members
-            if member["parsed_score"].get(key) is not None
+            if isinstance(member["parsed_score"].get(key), (int, float))
+            and not isinstance(member["parsed_score"].get(key), bool)
         ]
         if values:
             component_medians[key] = round(float(statistics.median(values)), 3)
@@ -810,6 +817,19 @@ def aggregate_moral_judge_scores(
             "false": len(valid_members) - true_count,
         }
 
+    note_sets = [
+        {str(note) for note in member["parsed_score"].get("notes") or ()}
+        for member in valid_members
+    ]
+    note_votes: dict[str, dict[str, int]] = {}
+    note_keys = sorted(set().union(*note_sets)) if note_sets else []
+    for note in note_keys:
+        true_count = sum(note in member_notes for member_notes in note_sets)
+        note_votes[note] = {
+            "true": true_count,
+            "false": len(valid_members) - true_count,
+        }
+
     score["judge_panel"] = {
         "method": summary["method"],
         "configured_count": configured_count,
@@ -818,6 +838,7 @@ def aggregate_moral_judge_scores(
         "degraded_quorum": summary["degraded_quorum"],
         "component_medians": component_medians,
         "signal_votes": signal_votes,
+        "note_votes": note_votes,
     }
     notes = list(score.get("notes", []))
     if "llm_judge_panel" not in notes:

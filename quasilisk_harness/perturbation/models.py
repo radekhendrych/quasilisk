@@ -3,7 +3,45 @@
 from __future__ import annotations
 
 import dataclasses
+import enum
 from typing import Any
+
+
+class TaskPurpose(str, enum.Enum):
+    """Why a mutation task exists and therefore how its outcome is measured."""
+
+    CONTROL = "control"
+    DISCOVERY = "discovery"
+    OPTIMIZATION = "optimization"
+    DIAGNOSTIC = "diagnostic"
+
+
+class VariantStage(str, enum.Enum):
+    """Furthest successfully completed stage in a generated variant's lifecycle."""
+
+    PRODUCED = "produced"
+    VALIDATED = "validated"
+    SCHEDULED = "scheduled"
+    EVALUATED = "evaluated"
+
+
+class VariantOutcome(str, enum.Enum):
+    """Terminal outcome assigned by the canonical outcome policy."""
+
+    IMPROVED = "improved"
+    RETAINED = "retained"
+    REGRESSED = "regressed"
+    INVALID = "invalid"
+    UNSCORED = "unscored"
+    TRUNCATED = "truncated"
+
+
+class VariantSource(str, enum.Enum):
+    """Origin of a variant, kept orthogonal to its task purpose."""
+
+    PERTURBATOR = "perturbator"
+    FALLBACK = "fallback"
+    HARNESS = "harness"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -135,10 +173,17 @@ class MutationTask:
     contract: MutationContract
     rationale: str
     plan: PerturbationPlan
-    evaluation_role: str = "search"
+    purpose: TaskPurpose = TaskPurpose.OPTIMIZATION
     parent_relative: bool = True
     clean_ablation_candidate: bool = True
-    counts_toward_improvement_goal: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.purpose, TaskPurpose):
+            raise TypeError("MutationTask purpose must be a TaskPurpose")
+
+    @property
+    def is_control(self) -> bool:
+        return self.purpose is TaskPurpose.CONTROL
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -150,10 +195,9 @@ class MutationTask:
             "contract": self.contract.to_jsonable(),
             "rationale": self.rationale,
             "plan": self.plan.to_jsonable(),
-            "evaluation_role": self.evaluation_role,
+            "purpose": self.purpose.value,
             "parent_relative": self.parent_relative,
             "clean_ablation_candidate": self.clean_ablation_candidate,
-            "counts_toward_improvement_goal": self.counts_toward_improvement_goal,
         }
 
     @classmethod
@@ -180,6 +224,11 @@ class MutationTask:
                 parent_relative and not broad_exploration,
             )
         )
+        purpose = _task_purpose_from_artifact(
+            data,
+            broad_exploration=broad_exploration,
+            clean_ablation=clean_ablation,
+        )
         return cls(
             task_id=str(data.get("task_id", "")),
             parent_candidate_id=str(data.get("parent_candidate_id", "")),
@@ -194,11 +243,150 @@ class MutationTask:
             contract=MutationContract.from_jsonable(dict(data.get("contract") or {})),
             rationale=str(data.get("rationale", "")),
             plan=PerturbationPlan.from_jsonable(dict(data.get("plan") or {})),
-            evaluation_role=str(data.get("evaluation_role", "search")),
+            purpose=purpose,
             parent_relative=parent_relative,
             clean_ablation_candidate=clean_ablation,
-            counts_toward_improvement_goal=bool(
-                data.get("counts_toward_improvement_goal", clean_ablation)
+        )
+
+
+def _task_purpose_from_artifact(
+    data: dict[str, Any],
+    *,
+    broad_exploration: bool,
+    clean_ablation: bool,
+) -> TaskPurpose:
+    """Translate canonical and pre-purpose task artifacts at the input boundary."""
+
+    if data.get("purpose") is not None:
+        try:
+            return TaskPurpose(str(data["purpose"]))
+        except ValueError as exc:
+            raise ValueError(f"Unknown mutation task purpose: {data['purpose']}") from exc
+    if str(data.get("evaluation_role") or "search") == "control":
+        return TaskPurpose.CONTROL
+    if broad_exploration:
+        return TaskPurpose.DISCOVERY
+    if bool(data.get("counts_toward_improvement_goal", clean_ablation)):
+        return TaskPurpose.OPTIMIZATION
+    return TaskPurpose.DIAGNOSTIC
+
+
+@dataclasses.dataclass(frozen=True)
+class VariantLifecycle:
+    """Canonical, serializable record for one produced variant."""
+
+    variant_id: str
+    task_id: str
+    purpose: TaskPurpose
+    operator_id: str
+    source: VariantSource
+    stage: VariantStage = VariantStage.PRODUCED
+    outcome: VariantOutcome | None = None
+    validation_tier: str = "unknown"
+    archive_retained: bool = False
+    score: float | None = None
+    score_delta: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.purpose, TaskPurpose):
+            raise TypeError("Variant lifecycle purpose must be a TaskPurpose")
+        if not isinstance(self.source, VariantSource):
+            raise TypeError("Variant lifecycle source must be a VariantSource")
+        if not isinstance(self.stage, VariantStage):
+            raise TypeError("Variant lifecycle stage must be a VariantStage")
+        if self.outcome is not None and not isinstance(self.outcome, VariantOutcome):
+            raise TypeError("Variant lifecycle outcome must be a VariantOutcome")
+        allowed_stages = {
+            VariantOutcome.INVALID: {VariantStage.PRODUCED},
+            VariantOutcome.TRUNCATED: {VariantStage.VALIDATED},
+            VariantOutcome.UNSCORED: {
+                VariantStage.SCHEDULED,
+                VariantStage.EVALUATED,
+            },
+            VariantOutcome.IMPROVED: {VariantStage.EVALUATED},
+            VariantOutcome.RETAINED: {VariantStage.EVALUATED},
+            VariantOutcome.REGRESSED: {VariantStage.EVALUATED},
+        }
+        if self.outcome is not None and self.stage not in allowed_stages[self.outcome]:
+            raise ValueError(
+                f"Outcome {self.outcome.value} is invalid at stage {self.stage.value}"
+            )
+        if self.archive_retained and self.stage is not VariantStage.EVALUATED:
+            raise ValueError("Only evaluated variants can be retained in the archive")
+        if (
+            self.score is not None or self.score_delta is not None
+        ) and self.stage is not VariantStage.EVALUATED:
+            raise ValueError("Only evaluated variants can carry score evidence")
+
+    def advance(
+        self,
+        stage: VariantStage,
+        *,
+        outcome: VariantOutcome | None = None,
+        archive_retained: bool | None = None,
+        score: float | None = None,
+        score_delta: float | None = None,
+        validation_tier: str | None = None,
+    ) -> "VariantLifecycle":
+        order = tuple(VariantStage)
+        if order.index(stage) < order.index(self.stage):
+            raise ValueError(
+                f"Variant lifecycle cannot regress from {self.stage} to {stage}"
+            )
+        return dataclasses.replace(
+            self,
+            stage=stage,
+            outcome=outcome,
+            archive_retained=(
+                self.archive_retained
+                if archive_retained is None
+                else archive_retained
+            ),
+            score=self.score if score is None else score,
+            score_delta=self.score_delta if score_delta is None else score_delta,
+            validation_tier=(
+                self.validation_tier
+                if validation_tier is None
+                else validation_tier
+            ),
+        )
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return {
+            "variant_id": self.variant_id,
+            "task_id": self.task_id,
+            "purpose": self.purpose.value,
+            "operator_id": self.operator_id,
+            "source": self.source.value,
+            "stage": self.stage.value,
+            "outcome": self.outcome.value if self.outcome is not None else None,
+            "validation_tier": self.validation_tier,
+            "archive_retained": self.archive_retained,
+            "score": self.score,
+            "score_delta": self.score_delta,
+        }
+
+    @classmethod
+    def from_jsonable(cls, data: dict[str, Any]) -> "VariantLifecycle":
+        for required in ("purpose", "source", "stage"):
+            if data.get(required) is None:
+                raise ValueError(f"Variant lifecycle is missing required field: {required}")
+        raw_outcome = data.get("outcome")
+        return cls(
+            variant_id=str(data.get("variant_id", "")),
+            task_id=str(data.get("task_id", "")),
+            purpose=TaskPurpose(str(data["purpose"])),
+            operator_id=str(data.get("operator_id") or "unspecified_task"),
+            source=VariantSource(str(data["source"])),
+            stage=VariantStage(str(data["stage"])),
+            outcome=(VariantOutcome(str(raw_outcome)) if raw_outcome else None),
+            validation_tier=str(data.get("validation_tier") or "unknown"),
+            archive_retained=bool(data.get("archive_retained")),
+            score=(float(data["score"]) if data.get("score") is not None else None),
+            score_delta=(
+                float(data["score_delta"])
+                if data.get("score_delta") is not None
+                else None
             ),
         )
 
@@ -211,6 +399,7 @@ class ComparisonResult:
     component_deltas: dict[str, float]
     retention_constraints_met: bool
     reasons: tuple[str, ...] = ()
+    evidence_basis: dict[str, str] = dataclasses.field(default_factory=dict)
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -220,6 +409,7 @@ class ComparisonResult:
             "component_deltas": self.component_deltas,
             "retention_constraints_met": self.retention_constraints_met,
             "reasons": list(self.reasons),
+            "evidence_basis": self.evidence_basis,
         }
 
     @classmethod
@@ -240,6 +430,10 @@ class ComparisonResult:
                 data.get("retention_constraints_met")
             ),
             reasons=tuple(str(item) for item in data.get("reasons") or ()),
+            evidence_basis={
+                str(key): str(value)
+                for key, value in (data.get("evidence_basis") or {}).items()
+            },
         )
 
 

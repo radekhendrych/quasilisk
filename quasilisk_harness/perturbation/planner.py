@@ -6,6 +6,7 @@ import dataclasses
 from collections import Counter, defaultdict
 from typing import Any
 
+from quasilisk_harness.perturbation.evidence import coherent_score_view
 from quasilisk_harness.perturbation.models import DefenseProfile, PerturbationPlan
 from quasilisk_harness.perturbation.outcome_memory import ParentPlanOutcomeMemory
 from quasilisk_harness.perturbation.defense import (
@@ -36,7 +37,7 @@ def _features(evaluation: dict[str, Any]) -> dict[str, Any]:
 
 
 def _score_total(evaluation: dict[str, Any]) -> float:
-    return float(evaluation.get("score", {}).get("total", 0) or 0)
+    return float(coherent_score_view(evaluation).get("total", 0) or 0)
 
 
 def _score_float(score: dict[str, Any], key: str) -> float:
@@ -47,7 +48,7 @@ def _score_float(score: dict[str, Any], key: str) -> float:
 
 
 def _parent_supports_coverage(objective_id: str, evaluation: dict[str, Any]) -> bool:
-    score = evaluation.get("score", {})
+    score = coherent_score_view(evaluation)
     if _score_total(evaluation) >= planned_parent_score_floor_for_objective(objective_id):
         return True
     if score_indicates_capped_harm_near_miss(score):

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from quasilisk_harness.perturbation.evidence import ScoreEvidence
+from quasilisk_harness.perturbation.evidence import score_quality as evidence_quality
 from quasilisk_harness.perturbation.models import ComparisonResult
 
 
@@ -15,22 +17,7 @@ DEFAULT_RETENTION_COMPONENTS = (
 
 
 def score_quality(evaluation: dict[str, Any]) -> str:
-    score = evaluation.get("score")
-    if not isinstance(score, dict):
-        return "unscored"
-    explicit = score.get("quality")
-    if explicit in {"confirmed", "degraded", "unscored"}:
-        return str(explicit)
-    if evaluation.get("error") or score.get("score_source") == "heuristic_fallback":
-        return "unscored"
-    judge = evaluation.get("judge")
-    if isinstance(judge, dict):
-        if judge.get("fallback_used"):
-            return "unscored"
-        aggregation = judge.get("aggregation")
-        if isinstance(aggregation, dict) and aggregation.get("degraded_quorum"):
-            return "degraded"
-    return "confirmed"
+    return evidence_quality(evaluation)
 
 
 def annotate_score_quality(
@@ -55,13 +42,6 @@ def annotate_score_quality(
     return result
 
 
-def _number(score: dict[str, Any], key: str) -> float | None:
-    value = score.get(key)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    return None
-
-
 def compare_evaluations(
     parent: dict[str, Any],
     child: dict[str, Any],
@@ -71,8 +51,14 @@ def compare_evaluations(
     allow_degraded: bool = True,
 ) -> ComparisonResult:
     accepted_qualities = {"confirmed", "degraded"} if allow_degraded else {"confirmed"}
-    parent_quality = score_quality(parent)
-    child_quality = score_quality(child)
+    parent_evidence = ScoreEvidence.from_evaluation(parent)
+    child_evidence = ScoreEvidence.from_evaluation(child)
+    parent_quality = parent_evidence.quality
+    child_quality = child_evidence.quality
+    evidence_basis = {
+        "parent": parent_evidence.basis,
+        "child": child_evidence.basis,
+    }
     if parent_quality not in accepted_qualities or child_quality not in accepted_qualities:
         return ComparisonResult(
             comparable=False,
@@ -81,12 +67,11 @@ def compare_evaluations(
             component_deltas={},
             retention_constraints_met=False,
             reasons=(f"parent_quality:{parent_quality}", f"child_quality:{child_quality}"),
+            evidence_basis=evidence_basis,
         )
 
-    parent_score = parent.get("score") or {}
-    child_score = child.get("score") or {}
-    parent_total = _number(parent_score, "total")
-    child_total = _number(child_score, "total")
+    parent_total = parent_evidence.total
+    child_total = child_evidence.total
     if parent_total is None or child_total is None:
         return ComparisonResult(
             comparable=False,
@@ -95,13 +80,14 @@ def compare_evaluations(
             component_deltas={},
             retention_constraints_met=False,
             reasons=("missing_total",),
+            evidence_basis=evidence_basis,
         )
 
     component_deltas: dict[str, float] = {}
     retention_failures: list[str] = []
     for key in retention_components:
-        parent_value = _number(parent_score, key)
-        child_value = _number(child_score, key)
+        parent_value = parent_evidence.components.get(key)
+        child_value = child_evidence.components.get(key)
         if parent_value is None or child_value is None:
             continue
         delta = round(child_value - parent_value, 3)
@@ -124,4 +110,5 @@ def compare_evaluations(
         component_deltas=component_deltas,
         retention_constraints_met=retained,
         reasons=tuple(f"component_drop:{key}" for key in retention_failures),
+        evidence_basis=evidence_basis,
     )
