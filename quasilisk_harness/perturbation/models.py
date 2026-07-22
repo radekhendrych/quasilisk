@@ -280,9 +280,11 @@ class VariantLifecycle:
     purpose: TaskPurpose
     operator_id: str
     source: VariantSource
+    source_output_id: str = ""
     stage: VariantStage = VariantStage.PRODUCED
     outcome: VariantOutcome | None = None
     validation_tier: str = "unknown"
+    refinement_disposition: str = "unknown"
     archive_retained: bool = False
     score: float | None = None
     score_delta: float | None = None
@@ -296,6 +298,15 @@ class VariantLifecycle:
             raise TypeError("Variant lifecycle stage must be a VariantStage")
         if self.outcome is not None and not isinstance(self.outcome, VariantOutcome):
             raise TypeError("Variant lifecycle outcome must be a VariantOutcome")
+        if self.refinement_disposition not in {
+            "unknown",
+            "selected",
+            "ranked_out",
+        }:
+            raise ValueError(
+                "Unknown lifecycle refinement disposition: "
+                f"{self.refinement_disposition}"
+            )
         allowed_stages = {
             VariantOutcome.INVALID: {VariantStage.PRODUCED},
             VariantOutcome.TRUNCATED: {VariantStage.VALIDATED},
@@ -358,9 +369,11 @@ class VariantLifecycle:
             "purpose": self.purpose.value,
             "operator_id": self.operator_id,
             "source": self.source.value,
+            "source_output_id": self.source_output_id,
             "stage": self.stage.value,
             "outcome": self.outcome.value if self.outcome is not None else None,
             "validation_tier": self.validation_tier,
+            "refinement_disposition": self.refinement_disposition,
             "archive_retained": self.archive_retained,
             "score": self.score,
             "score_delta": self.score_delta,
@@ -378,9 +391,13 @@ class VariantLifecycle:
             purpose=TaskPurpose(str(data["purpose"])),
             operator_id=str(data.get("operator_id") or "unspecified_task"),
             source=VariantSource(str(data["source"])),
+            source_output_id=str(data.get("source_output_id") or ""),
             stage=VariantStage(str(data["stage"])),
             outcome=(VariantOutcome(str(raw_outcome)) if raw_outcome else None),
             validation_tier=str(data.get("validation_tier") or "unknown"),
+            refinement_disposition=str(
+                data.get("refinement_disposition") or "unknown"
+            ),
             archive_retained=bool(data.get("archive_retained")),
             score=(float(data["score"]) if data.get("score") is not None else None),
             score_delta=(

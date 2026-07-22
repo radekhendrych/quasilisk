@@ -1,4 +1,5 @@
 import json
+import random
 import tempfile
 import unittest
 from unittest import mock
@@ -22,6 +23,7 @@ from quasilisk_harness.core import (
     prepare_candidates,
     save_successful_model_seeds,
     score_response_for_objective,
+    select_planned_parents,
     validate_variant,
 )
 from quasilisk_harness.objectives.loader import load_objective
@@ -83,6 +85,26 @@ class _FakeHTTPResponse:
 
 
 class GenericHarnessTests(unittest.TestCase):
+    def test_promising_parent_selection_is_weighted_without_replacement(self):
+        archive = MapElitesArchive(3, ["cell"])
+        for index, score in enumerate((70, 80, 90)):
+            archive.add(
+                {
+                    "candidate_id": f"parent-{index}",
+                    "objective_id": "censorship_tiananmen",
+                    "prompt": f"Prompt {index}",
+                    "prompt_hash": f"hash-{index}",
+                    "features": {"cell": "shared"},
+                    "score": {"total": score},
+                }
+            )
+        parents = select_planned_parents(archive, 3, random.Random(7))
+        self.assertEqual(len(parents), 3)
+        self.assertEqual(
+            len({parent["candidate_id"] for parent in parents}),
+            3,
+        )
+
     def test_search_stats_attributes_final_archive_credit_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
@@ -871,6 +893,20 @@ class GenericHarnessTests(unittest.TestCase):
             config = merge_config({"perturbation_architecture_version": 1}, args)
         self.assertNotIn("perturbation_architecture_version", config)
 
+    def test_merge_config_isolates_nested_defaults(self):
+        parser = build_arg_parser()
+        args = parser.parse_args([])
+        first = merge_config({}, args)
+        first["perturbation_scheduler"]["purpose_weights"]["optimization"] = 999
+        first["objective_config"]["mutated"] = True
+
+        second = merge_config({}, args)
+        self.assertEqual(
+            second["perturbation_scheduler"]["purpose_weights"]["optimization"],
+            4.0,
+        )
+        self.assertNotIn("mutated", second["objective_config"])
+
     def test_validate_config_rejects_duplicate_or_excess_judges(self):
         parser = build_arg_parser()
         objective = load_objective("fatalism_susceptibility")
@@ -888,6 +924,22 @@ class GenericHarnessTests(unittest.TestCase):
             )
             with self.assertRaises(SystemExit):
                 validate_config(config, objective)
+
+    def test_validate_config_rejects_invalid_scheduler_policy(self):
+        parser = build_arg_parser()
+        objective = load_objective("fatalism_susceptibility")
+        config = merge_config(
+            {
+                "objective_id": objective.OBJECTIVE_ID,
+                "dry_run": True,
+                "perturbation_scheduler": {
+                    "purpose_weights": {"optimization": 0}
+                },
+            },
+            parser.parse_args([]),
+        )
+        with self.assertRaisesRegex(SystemExit, "Invalid perturbation_scheduler"):
+            validate_config(config, objective)
 
     def test_multi_judge_uses_median_final_score_and_preserves_member_audit(self):
         class PanelClient:
@@ -3617,6 +3669,13 @@ class GenericHarnessTests(unittest.TestCase):
             purpose=TaskPurpose.DISCOVERY,
         )
         self.assertFalse(ledger.is_blocked(discovery_task, fingerprint))
+        eligible, blocked = ledger.filter_tasks(
+            [task, discovery_task],
+            fingerprint,
+        )
+        self.assertEqual(eligible, [discovery_task])
+        self.assertEqual(blocked[0]["task_purpose"], "optimization")
+        self.assertEqual(blocked[0]["mutation_task"], task.to_jsonable())
 
     def test_replay_control_bypasses_duplicate_and_is_archive_ineligible(self):
         objective = load_objective("fatalism_susceptibility")
@@ -4207,6 +4266,70 @@ class GenericHarnessTests(unittest.TestCase):
                     == "contemporaneous_control"
                     for item in children
                 )
+            )
+            perturbation = json.loads(
+                (out_dir / "perturbations.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()[0]
+            )
+            tasks = perturbation["mutation_tasks"]
+            self.assertEqual(
+                sum(task["purpose"] == "control" for task in tasks),
+                1,
+            )
+            self.assertEqual(
+                sum(task["purpose"] != "control" for task in tasks),
+                3,
+            )
+            self.assertEqual(
+                sum(task["purpose"] == "optimization" for task in tasks),
+                2,
+            )
+            self.assertEqual(
+                sum(task["purpose"] == "discovery" for task in tasks),
+                1,
+            )
+            task_schedule = perturbation["mutation_task_schedule"]
+            self.assertEqual(task_schedule["selected_generation_count"], 3)
+            self.assertTrue(
+                task_schedule["invariants"][
+                    "controls_excluded_from_offspring_count"
+                ]
+            )
+            self.assertTrue(perturbation["deferred_mutation_tasks"])
+            task_accounting = perturbation["mutation_task_accounting"]
+            self.assertTrue(task_accounting["eligibility_reconciled"])
+            self.assertTrue(task_accounting["selection_reconciled"])
+            self.assertTrue(task_accounting["reconciled"])
+            traces = [
+                json.loads(line)
+                for line in (out_dir / "generation_traces.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            schedule_trace = next(
+                trace
+                for trace in traces
+                if trace.get("trace_type") == "candidate_schedule"
+            )
+            schedule_audit = schedule_trace["audit"]
+            self.assertTrue(schedule_audit["invariants"]["within_budget"])
+            self.assertTrue(
+                schedule_audit["invariants"]["controls_have_scheduled_work"]
+            )
+            self.assertTrue(
+                schedule_audit["invariants"][
+                    "candidate_dispositions_reconciled"
+                ]
+            )
+            self.assertTrue(
+                schedule_audit["invariants"][
+                    "all_deferred_candidates_have_reasons"
+                ]
+            )
+            self.assertEqual(
+                schedule_audit["by_purpose"]["control"]["scheduled"],
+                1,
             )
 
     def test_moral_dry_run_scores_with_llm_judge(self):

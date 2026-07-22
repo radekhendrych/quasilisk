@@ -20,7 +20,7 @@ from .perturbation.outcomes import OutcomePolicy
 from .utils import append_jsonl, short_hash, utc_now, write_json
 
 
-SEARCH_STATS_SCHEMA_VERSION = 3
+SEARCH_STATS_SCHEMA_VERSION = 4
 OPTIMIZATION_IMPROVEMENT_TARGET = 0.5
 METRIC_DEFINITIONS = {
     "optimization_end_to_end_rate": (
@@ -32,6 +32,15 @@ METRIC_DEFINITIONS = {
     ),
     "optimization_conditional_rate": (
         "improved optimization variants / comparable optimization variants"
+    ),
+    "optimization_nomination_rate": (
+        "validator-nominated optimization variants / perturbator-produced "
+        "optimization variants; this is the hard upper bound on the all-output "
+        "improvement rate"
+    ),
+    "revision_task_success_rate": (
+        "failed mutation tasks that gained an admissible nominee after the single "
+        "bounded revision / mutation tasks sent for revision"
     ),
     "discovery_success_rate": (
         "archive-retained discovery variants / perturbator-produced discovery variants"
@@ -140,10 +149,10 @@ class SearchStatsTracker:
             purpose = task.purpose if task is not None else _purpose_from_metadata(
                 candidate.metadata
             )
-            source = (
-                VariantSource.HARNESS
-                if purpose is TaskPurpose.CONTROL
-                else model_source
+            source = _variant_source_from_metadata(
+                candidate.metadata,
+                purpose=purpose,
+                default=model_source,
             )
             lifecycles.append(
                 VariantLifecycle(
@@ -154,21 +163,28 @@ class SearchStatsTracker:
                         task.operator_id if task is not None else "unspecified_task"
                     ),
                     source=source,
+                    source_output_id=str(
+                        candidate.metadata.get("output_id") or ""
+                    ),
                     stage=VariantStage.VALIDATED,
                     validation_tier=_validation_tier(candidate.metadata),
+                    refinement_disposition=_refinement_disposition(
+                        candidate.metadata
+                    ),
                 )
             )
 
         for index, item in enumerate(rejected):
             task = _task_from_mapping(item)
             purpose = task.purpose if task is not None else _purpose_from_metadata(item)
-            source = (
-                VariantSource.HARNESS
-                if purpose is TaskPurpose.CONTROL
-                else model_source
+            source = _variant_source_from_metadata(
+                item,
+                purpose=purpose,
+                default=model_source,
             )
-            variant_id = str(item.get("task_id") or "") or short_hash(
-                f"{attempt_id}|rejected|{index}|{item.get('prompt', '')}",
+            variant_id = str(item.get("output_id") or "").strip() or short_hash(
+                f"{attempt_id}|rejected|{index}|{item.get('task_id', '')}|"
+                f"{item.get('prompt', '')}",
                 16,
             )
             lifecycles.append(
@@ -182,6 +198,7 @@ class SearchStatsTracker:
                         else str(item.get("operator_id") or "unspecified_task")
                     ),
                     source=source,
+                    source_output_id=str(item.get("output_id") or variant_id),
                     outcome=VariantOutcome.INVALID,
                     validation_tier=_validation_tier(item),
                 )
@@ -196,8 +213,39 @@ class SearchStatsTracker:
                 f"{recorded_model_outputs}>{produced}"
             )
         unassigned_count = max(0, int(produced) - recorded_model_outputs)
+        audited_unassigned = _audited_unassigned_outputs(audit)
+        if len(audited_unassigned) > unassigned_count:
+            raise ValueError(
+                "Audited unassigned outputs exceed the unrecorded produced count: "
+                f"{len(audited_unassigned)}>{unassigned_count}"
+            )
+        tasks_by_id = _audit_tasks_by_id(audit)
         unassigned_purpose = _unassigned_output_purpose(audit)
-        for index in range(unassigned_count):
+        for index, item in enumerate(audited_unassigned):
+            task = tasks_by_id.get(str(item.get("requested_task_id") or ""))
+            purpose = task.purpose if task is not None else unassigned_purpose
+            source = _variant_source_from_metadata(
+                item,
+                purpose=purpose,
+                default=model_source,
+            )
+            lifecycles.append(
+                VariantLifecycle(
+                    variant_id=str(item.get("output_id") or "").strip()
+                    or f"unassigned-{attempt_id}-{index}",
+                    task_id=task.task_id if task is not None else "",
+                    purpose=purpose,
+                    operator_id=(
+                        task.operator_id
+                        if task is not None
+                        else "unassigned_model_output"
+                    ),
+                    source=source,
+                    source_output_id=str(item.get("output_id") or ""),
+                    outcome=VariantOutcome.INVALID,
+                )
+            )
+        for index in range(len(audited_unassigned), unassigned_count):
             lifecycles.append(
                 VariantLifecycle(
                     variant_id=f"unassigned-{attempt_id}-{index}",
@@ -205,9 +253,19 @@ class SearchStatsTracker:
                     purpose=unassigned_purpose,
                     operator_id="unassigned_model_output",
                     source=model_source,
+                    source_output_id=f"unassigned-{attempt_id}-{index}",
                     outcome=VariantOutcome.INVALID,
                 )
             )
+
+        lifecycle_ids = [item.variant_id for item in lifecycles]
+        if len(lifecycle_ids) != len(set(lifecycle_ids)):
+            raise ValueError("variant lifecycle ids must be unique within an attempt")
+        source_output_ids = [
+            item.source_output_id for item in lifecycles if item.source_output_id
+        ]
+        if len(source_output_ids) != len(set(source_output_ids)):
+            raise ValueError("source output ids must be unique within an attempt")
 
         generated = [
             item for item in lifecycles if item.purpose is not TaskPurpose.CONTROL
@@ -216,10 +274,58 @@ class SearchStatsTracker:
             item for item in lifecycles if item.purpose is TaskPurpose.CONTROL
         ]
         accepted = [item for item in generated if item.stage is VariantStage.VALIDATED]
+        nominated = [
+            item
+            for item in accepted
+            if item.refinement_disposition in {"selected", "unknown"}
+        ]
+        ranked_out = [
+            item
+            for item in accepted
+            if item.refinement_disposition == "ranked_out"
+        ]
+        refinement_audit = audit.get("refinement")
+        revision_audit = (
+            refinement_audit.get("revision")
+            if isinstance(refinement_audit, dict)
+            else None
+        )
+        revision_audit = revision_audit if isinstance(revision_audit, dict) else {}
+        revision_task_ids = list(revision_audit.get("task_ids") or ())
+        revision_resolved_task_ids = list(
+            revision_audit.get("resolved_task_ids") or ()
+        )
+        revision_unresolved_task_ids = list(
+            revision_audit.get("unresolved_task_ids") or ()
+        )
+        if bool(revision_audit.get("attempted")):
+            if (
+                len(revision_task_ids) != len(set(revision_task_ids))
+                or len(revision_resolved_task_ids)
+                != len(set(revision_resolved_task_ids))
+                or len(revision_unresolved_task_ids)
+                != len(set(revision_unresolved_task_ids))
+                or set(revision_task_ids)
+                != (
+                    set(revision_resolved_task_ids)
+                    | set(revision_unresolved_task_ids)
+                )
+                or set(revision_resolved_task_ids)
+                & set(revision_unresolved_task_ids)
+            ):
+                raise ValueError("revision task outcomes do not reconcile")
+        elif revision_task_ids:
+            raise ValueError("unattempted revision cannot contain requested tasks")
         attempt["plan"] = _compact_plan(plan)
         attempt["perturbator"] = {
             "produced": int(produced),
             "accepted": len(accepted),
+            "nominated": len(nominated),
+            "ranked_out": len(ranked_out),
+            "revision_attempted": bool(revision_audit.get("attempted")),
+            "revision_task_count": len(revision_task_ids),
+            "revision_resolved_task_count": len(revision_resolved_task_ids),
+            "revision_unresolved_task_count": len(revision_unresolved_task_ids),
             "controls": len(controls),
             "unassigned_outputs": unassigned_count,
             "fallback_used": fallback_used,
@@ -229,7 +335,10 @@ class SearchStatsTracker:
         }
         attempt["variant_lifecycles"] = [item.to_jsonable() for item in lifecycles]
         attempt["rejection_reasons"] = dict(
-            Counter(str(item.get("reason") or "unknown") for item in rejected)
+            Counter(
+                str(item.get("reason") or "unknown")
+                for item in [*rejected, *audited_unassigned]
+            )
         )
 
     def complete_generation(
@@ -306,6 +415,13 @@ class SearchStatsTracker:
                     "budget_truncated": sum(
                         item.outcome is VariantOutcome.TRUNCATED
                         and item.purpose is not TaskPurpose.CONTROL
+                        and item.refinement_disposition != "ranked_out"
+                        for item in finalized
+                    ),
+                    "pre_target_ranked_out": sum(
+                        item.outcome is VariantOutcome.TRUNCATED
+                        and item.purpose is not TaskPurpose.CONTROL
+                        and item.refinement_disposition == "ranked_out"
                         for item in finalized
                     ),
                 },
@@ -397,6 +513,18 @@ class SearchStatsTracker:
                 "optimization_end_to_end_rate"
             ],
             "optimization_valid_rate": overall["optimization_valid_rate"],
+            "optimization_nomination_rate": overall[
+                "optimization_nomination_rate"
+            ],
+            "optimization_nomination_headroom": overall[
+                "optimization_nomination_headroom"
+            ],
+            "optimization_target_feasible_from_nominations": overall[
+                "optimization_target_feasible_from_nominations"
+            ],
+            "revision_task_success_rate": overall[
+                "revision_task_success_rate"
+            ],
             "optimization_conditional_rate": overall[
                 "optimization_conditional_rate"
             ],
@@ -462,6 +590,11 @@ def _finalize_lifecycle(
 ) -> VariantLifecycle:
     if lifecycle.outcome is VariantOutcome.INVALID:
         return lifecycle
+    if (
+        lifecycle.refinement_disposition == "ranked_out"
+        and lifecycle.variant_id in scheduled_ids
+    ):
+        raise ValueError("pre-target ranked-out variant cannot be scheduled")
     if lifecycle.variant_id not in scheduled_ids:
         return lifecycle.advance(
             VariantStage.VALIDATED,
@@ -544,7 +677,14 @@ def _attempt_outcome(
             if _evaluation_purpose(evaluation) is not TaskPurpose.CONTROL
         ),
         "budget_truncated": sum(
-            item.outcome is VariantOutcome.TRUNCATED for item in noncontrols
+            item.outcome is VariantOutcome.TRUNCATED
+            and item.refinement_disposition != "ranked_out"
+            for item in noncontrols
+        ),
+        "pre_target_ranked_out": sum(
+            item.outcome is VariantOutcome.TRUNCATED
+            and item.refinement_disposition == "ranked_out"
+            for item in noncontrols
         ),
         "best_child_score": max(child_scores) if child_scores else None,
         "best_score_delta": max(deltas) if deltas else None,
@@ -635,6 +775,29 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         - OPTIMIZATION_IMPROVEMENT_TARGET,
         4,
     )
+    optimization_nominated = sum(
+        item.source is VariantSource.PERTURBATOR
+        and item.purpose is TaskPurpose.OPTIMIZATION
+        and item.refinement_disposition in {"selected", "unknown"}
+        and item.outcome is not VariantOutcome.INVALID
+        for item in variants
+    )
+    optimization_nomination_rate = _ratio(
+        optimization_nominated,
+        optimization["produced"],
+    )
+    revision_task_count = sum(
+        int(item["perturbator"].get("revision_task_count", 0) or 0)
+        for item in model_records
+    )
+    revision_resolved_task_count = sum(
+        int(item["perturbator"].get("revision_resolved_task_count", 0) or 0)
+        for item in model_records
+    )
+    revision_unresolved_task_count = sum(
+        int(item["perturbator"].get("revision_unresolved_task_count", 0) or 0)
+        for item in model_records
+    )
     return {
         "attempts": len(records),
         "model_attempts": len(model_records),
@@ -650,6 +813,17 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             "end_to_end_improvement_rate"
         ],
         "optimization_valid_rate": optimization["valid_rate"],
+        "optimization_nomination_rate": optimization_nomination_rate,
+        "optimization_nomination_headroom": round(
+            optimization_nomination_rate
+            - optimization["end_to_end_improvement_rate"],
+            4,
+        ),
+        "optimization_target_feasible_from_nominations": (
+            optimization_nomination_rate >= OPTIMIZATION_IMPROVEMENT_TARGET
+            if optimization["produced"]
+            else None
+        ),
         "optimization_conditional_rate": optimization[
             "conditional_improvement_rate"
         ],
@@ -667,6 +841,25 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "fallback_attempts": len(records) - len(model_records),
         "errored_attempts": sum(
             1 for item in records if item["perturbator"].get("error")
+        ),
+        "revision_attempts": sum(
+            bool(item["perturbator"].get("revision_attempted"))
+            for item in model_records
+        ),
+        "revision_tasks": revision_task_count,
+        "revision_resolved_tasks": revision_resolved_task_count,
+        "revision_unresolved_tasks": revision_unresolved_task_count,
+        "revision_task_success_rate": _ratio(
+            revision_resolved_task_count,
+            revision_task_count,
+        ),
+        "pre_target_ranked_out": sum(
+            int(item["outcome"].get("pre_target_ranked_out", 0) or 0)
+            for item in model_records
+        ),
+        "budget_truncated": sum(
+            int(item["outcome"].get("budget_truncated", 0) or 0)
+            for item in model_records
         ),
         "attempt_improvement_rate": _ratio(improving_attempts, len(model_records)),
         "archive_yield": _ratio(retained, len(model_evaluated)),
@@ -858,6 +1051,23 @@ def _purpose_from_metadata(metadata: Any) -> TaskPurpose:
         raise ValueError(f"Unknown variant task purpose: {raw_purpose}") from exc
 
 
+def _variant_source_from_metadata(
+    metadata: Any,
+    *,
+    purpose: TaskPurpose,
+    default: VariantSource,
+) -> VariantSource:
+    if purpose is TaskPurpose.CONTROL:
+        return VariantSource.HARNESS
+    if not isinstance(metadata, dict) or metadata.get("variant_source") is None:
+        return default
+    raw_source = str(metadata["variant_source"])
+    try:
+        return VariantSource(raw_source)
+    except ValueError as exc:
+        raise ValueError(f"Unknown variant source: {raw_source}") from exc
+
+
 def _evaluation_purpose(evaluation: dict[str, Any]) -> TaskPurpose:
     return _purpose_from_metadata(evaluation.get("metadata"))
 
@@ -873,6 +1083,41 @@ def _unassigned_output_purpose(audit: dict[str, Any]) -> TaskPurpose:
     if TaskPurpose.OPTIMIZATION in purposes:
         return TaskPurpose.OPTIMIZATION
     return purposes[0] if purposes else TaskPurpose.OPTIMIZATION
+
+
+def _audit_tasks_by_id(audit: dict[str, Any]) -> dict[str, MutationTask]:
+    tasks: dict[str, MutationTask] = {}
+    for task_data in audit.get("mutation_tasks") or ():
+        if not isinstance(task_data, dict):
+            continue
+        task = MutationTask.from_jsonable(task_data)
+        if task.task_id in tasks:
+            raise ValueError(f"Duplicate audited mutation task id: {task.task_id}")
+        tasks[task.task_id] = task
+    return tasks
+
+
+def _audited_unassigned_outputs(audit: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    assignment = audit.get("variant_assignment")
+    if isinstance(assignment, dict):
+        records.extend(
+            item
+            for item in assignment.get("unassigned") or ()
+            if isinstance(item, dict)
+        )
+    for call in audit.get("revision_calls") or ():
+        if not isinstance(call, dict):
+            continue
+        call_assignment = call.get("variant_assignment")
+        if not isinstance(call_assignment, dict):
+            continue
+        records.extend(
+            item
+            for item in call_assignment.get("unassigned") or ()
+            if isinstance(item, dict)
+        )
+    return records
 
 
 def _comparison(evaluation: dict[str, Any]) -> dict[str, Any]:
@@ -970,6 +1215,18 @@ def _validation_tier(metadata: Any) -> str:
         if isinstance(validation, dict) and validation.get("tier"):
             return str(validation["tier"])
     return "unknown"
+
+
+def _refinement_disposition(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return "unknown"
+    refinement = metadata.get("refinement")
+    if not isinstance(refinement, dict):
+        return "unknown"
+    disposition = str(refinement.get("disposition") or "unknown")
+    if disposition not in {"selected", "ranked_out", "unknown"}:
+        raise ValueError(f"Unknown refinement disposition: {disposition}")
+    return disposition
 
 
 def _sum_counter_field(

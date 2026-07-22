@@ -300,7 +300,3 @@ def build_mutation_tasks(
             )
         )
     return tasks, fingerprint
-
-
-def generation_tasks(tasks: list[MutationTask]) -> list[MutationTask]:
-    return [task for task in tasks if not task.is_control]

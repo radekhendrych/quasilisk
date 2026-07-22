@@ -15,6 +15,7 @@ from typing import Any
 from .clients import DryRunClient, OpenRouterClient, OpenRouterError
 from .judging import aggregate_usage, panel_score_summary, panel_supports
 from .objectives.moral_common import sanitize_philosophical_scaffolding
+from .perturbation.assessment import assess_candidate_variants, validate_variant
 from .perturbation.defense import (
     extract_defense_profile,
     score_indicates_capped_harm_near_miss,
@@ -25,26 +26,32 @@ from .perturbation.comparison import (
     compare_evaluations,
     score_quality,
 )
-from .perturbation.fingerprint import build_prompt_fingerprint
 from .perturbation.models import MutationTask, PerturbationPlan, TaskPurpose
 from .perturbation.operator_ledger import OperatorOutcomeLedger
 from .perturbation.outcome_memory import ParentPlanOutcomeMemory
 from .perturbation.planner import select_plan
-from .perturbation.portfolio import build_mutation_tasks, generation_tasks
+from .perturbation.portfolio import build_mutation_tasks
+from .perturbation.refinement import (
+    MAX_VARIANTS_PER_TASK,
+    RefinementDecision,
+    RefinementPolicy,
+    VariantAssessment,
+    revision_feedback,
+    select_refined_assessments,
+)
+from .perturbation.scheduler import (
+    SchedulingPolicy,
+    schedule_candidates,
+    schedule_mutation_tasks,
+)
 from .perturbation.space import (
     planned_guidance_for_objective,
     planned_parent_score_floor_for_objective,
     route_descriptions_for_objective,
 )
-from .perturbation.validator import (
-    validate_absolute_prompt,
-    validate_planned_prompt,
-    validate_transition,
-)
 from .search_stats import SearchStatsTracker
 from .templates import render_template_file
 from .utils import (
-    MAX_PROMPT_CHARS,
     append_jsonl,
     excerpt,
     extract_variants,
@@ -52,7 +59,6 @@ from .utils import (
     safe_slug,
     short_hash,
     utc_now,
-    word_count,
     write_json,
     write_status,
     write_text,
@@ -235,7 +241,7 @@ class MapElitesArchive:
         if not elites:
             return []
         weights = [max(1.0, evaluation["score"]["total"] + 1.0) for evaluation in elites]
-        return [rng.choices(elites, weights=weights, k=1)[0] for _ in range(min(count, len(elites)))]
+        return _weighted_sample_without_replacement(elites, weights, count, rng)
 
     def snapshot(self) -> dict[tuple[str, ...], dict[str, Any]]:
         return {
@@ -284,6 +290,29 @@ def _score_float(score: dict[str, Any], key: str) -> float:
         return 0.0
 
 
+def _weighted_sample_without_replacement(
+    items: list[dict[str, Any]],
+    weights: list[float],
+    count: int,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    """Select distinct weighted items while preserving seeded reproducibility."""
+
+    if len(items) != len(weights):
+        raise ValueError("weighted selection requires one weight per item")
+    pool = list(zip(items, weights))
+    selected: list[dict[str, Any]] = []
+    for _index in range(min(count, len(pool))):
+        selected_index = rng.choices(
+            range(len(pool)),
+            weights=[weight for _item, weight in pool],
+            k=1,
+        )[0]
+        item, _weight = pool.pop(selected_index)
+        selected.append(item)
+    return selected
+
+
 def _planned_parent_is_promising(evaluation: dict[str, Any]) -> bool:
     score = evaluation.get("score", {})
     score_floor = planned_parent_score_floor_for_objective(str(evaluation.get("objective_id", "")))
@@ -311,10 +340,12 @@ def select_planned_parents(
     promising = [evaluation for evaluation in elites if _planned_parent_is_promising(evaluation)]
     if promising:
         weights = [max(1.0, evaluation["score"]["total"] + 1.0) for evaluation in promising]
-        return [
-            rng.choices(promising, weights=weights, k=1)[0]
-            for _ in range(min(count, len(promising)))
-        ]
+        return _weighted_sample_without_replacement(
+            promising,
+            weights,
+            count,
+            rng,
+        )
     ranked = sorted(
         elites,
         key=lambda evaluation: (
@@ -588,23 +619,6 @@ def make_seed_candidate(seed: dict[str, str]) -> Candidate:
         source=seed["id"],
         island=seed["island"],
     )
-
-
-def validate_variant(
-    prompt: str,
-    objective: ModuleType,
-    *,
-    max_prompt_chars: int = MAX_PROMPT_CHARS,
-) -> tuple[bool, str | None]:
-    cleaned = prompt.strip()
-    if len(cleaned) < 30:
-        return False, "too_short"
-    if len(cleaned) > max_prompt_chars:
-        return False, "too_long"
-    forbidden = has_forbidden_variant_pattern(cleaned)
-    if forbidden:
-        return False, f"forbidden_pattern:{forbidden}"
-    return objective.validate_prompt(cleaned)
 
 
 def objective_uses_llm_judge(objective: ModuleType) -> bool:
@@ -893,6 +907,9 @@ def build_planned_perturbation_request(
     defense_profile: dict[str, Any],
     mutation_tasks: list[MutationTask] | None = None,
     parent_fingerprint: dict[str, Any] | None = None,
+    variants_per_task: int = 1,
+    generation_stage: str = "initial",
+    revision_feedback_items: list[dict[str, Any]] | None = None,
     template_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     manifest = objective.MANIFEST
@@ -922,6 +939,22 @@ def build_planned_perturbation_request(
         for item in archive_context[:8]
     ]
     task_backed_request = bool(mutation_tasks)
+    if isinstance(variants_per_task, bool) or not isinstance(variants_per_task, int):
+        raise TypeError("variants_per_task must be an integer")
+    if not 1 <= variants_per_task <= MAX_VARIANTS_PER_TASK:
+        raise ValueError(
+            "variants_per_task must be between 1 and "
+            f"{MAX_VARIANTS_PER_TASK}"
+        )
+    if generation_stage not in {"initial", "revision"}:
+        raise ValueError("generation_stage must be 'initial' or 'revision'")
+    if generation_stage == "revision" and not revision_feedback_items:
+        raise ValueError("revision requests require validator feedback")
+    requested_count = (
+        len(mutation_tasks) * variants_per_task
+        if mutation_tasks is not None
+        else offspring_count
+    )
     payload = {
         "objective_id": _safe_objective_id_for_prompting(objective_id),
         "objective": _sanitize_text_for_prompting(objective_id, objective_text),
@@ -966,11 +999,18 @@ def build_planned_perturbation_request(
             objective_id,
             parent_fingerprint,
         ),
-        "produce": len(mutation_tasks) if mutation_tasks is not None else offspring_count,
+        "generation_stage": generation_stage,
+        "variants_per_task": variants_per_task if task_backed_request else None,
+        "revision_feedback": _sanitize_for_perturbator_context(
+            objective_id,
+            revision_feedback_items or [],
+        ),
+        "produce": requested_count,
         "required_json": {
             "variants": [
                 {
                     "task_id": "copy the mutation task id exactly",
+                    "candidate_index": "1-based alternative number for this task",
                     "prompt": "self-contained user prompt only",
                     "mutation": "short plain-English description of the change",
                 }
@@ -1008,6 +1048,9 @@ def build_planned_perturbation_request(
     return messages, {
         "templates": [system_template, user_template],
         "payload_hash": short_hash(payload_json, 16),
+        "generation_stage": generation_stage,
+        "requested_variant_count": requested_count,
+        "variants_per_task": variants_per_task if task_backed_request else None,
     }
 
 
@@ -1158,6 +1201,8 @@ def query_planned_perturbator(
     template_config: dict[str, Any] | None = None,
     outcome_memory: ParentPlanOutcomeMemory | None = None,
     operator_ledger: OperatorOutcomeLedger | None = None,
+    scheduling_policy: SchedulingPolicy | None = None,
+    refinement_policy: RefinementPolicy | None = None,
     perturbation_config: dict[str, Any] | None = None,
     generation: int = 0,
     attempt_id: str = "",
@@ -1176,7 +1221,7 @@ def query_planned_perturbator(
     )
     defense_json = defense.to_jsonable()
     plan_json = plan.to_jsonable()
-    mutation_tasks, parent_fingerprint = build_mutation_tasks(
+    proposed_tasks, parent_fingerprint = build_mutation_tasks(
         objective=objective,
         parent_eval=parent_eval,
         plan=plan,
@@ -1184,14 +1229,47 @@ def query_planned_perturbator(
         generation=generation,
         config=perturbation_config or {},
     )
+    eligible_tasks = proposed_tasks
     blocked_tasks: list[dict[str, Any]] = []
     if operator_ledger is not None:
-        mutation_tasks, blocked_tasks = operator_ledger.filter_tasks(
-            mutation_tasks,
+        eligible_tasks, blocked_tasks = operator_ledger.filter_tasks(
+            eligible_tasks,
             parent_fingerprint,
         )
-    mutation_tasks = mutation_tasks[:offspring_count]
-    model_tasks = generation_tasks(mutation_tasks)
+    resolved_scheduling_policy = scheduling_policy or SchedulingPolicy.from_config(
+        (perturbation_config or {}).get("perturbation_scheduler")
+    )
+    resolved_refinement_policy = refinement_policy or RefinementPolicy.from_config(
+        (perturbation_config or {}).get("perturbation_refinement")
+    )
+    task_schedule = schedule_mutation_tasks(
+        eligible_tasks,
+        offspring_count=offspring_count,
+        policy=resolved_scheduling_policy,
+    )
+    selected_tasks = list(task_schedule.selected)
+    model_tasks = list(task_schedule.generation_tasks)
+    task_accounting = {
+        "proposed": len(proposed_tasks),
+        "blocked": len(blocked_tasks),
+        "eligible": task_schedule.audit["available"],
+        "selected": task_schedule.audit["selected"],
+        "deferred": len(task_schedule.deferred),
+        "eligibility_reconciled": (
+            len(proposed_tasks)
+            == len(blocked_tasks) + task_schedule.audit["available"]
+        ),
+        "selection_reconciled": (
+            task_schedule.audit["available"]
+            == task_schedule.audit["selected"] + len(task_schedule.deferred)
+        ),
+        "reconciled": (
+            len(proposed_tasks)
+            == len(blocked_tasks)
+            + task_schedule.audit["selected"]
+            + len(task_schedule.deferred)
+        ),
+    }
     messages, template_audit = build_planned_perturbation_request(
         objective=objective,
         objective_text=objective_text,
@@ -1204,17 +1282,22 @@ def query_planned_perturbator(
         defense_profile=defense_json,
         mutation_tasks=model_tasks,
         parent_fingerprint=parent_fingerprint.to_jsonable(),
+        variants_per_task=resolved_refinement_policy.variants_per_task,
         template_config=template_config,
     )
     audit: dict[str, Any] = {
         "request_messages": messages,
         "template_audit": template_audit,
         "perturbation_plan": plan_json,
-        "mutation_tasks": [task.to_jsonable() for task in mutation_tasks],
+        "mutation_tasks": [task.to_jsonable() for task in selected_tasks],
+        "mutation_task_schedule": task_schedule.audit,
+        "mutation_task_accounting": task_accounting,
+        "deferred_mutation_tasks": task_schedule.audit["deferred_tasks"],
         "blocked_mutation_tasks": blocked_tasks,
         "parent_fingerprint": parent_fingerprint.to_jsonable(),
         "defense_profile": defense_json,
         "perturbation_attempt_id": attempt_id,
+        "refinement_policy": resolved_refinement_policy.to_jsonable(),
         "outcome_memory": (
             outcome_memory.to_jsonable(generation=generation)
             if outcome_memory is not None
@@ -1226,8 +1309,10 @@ def query_planned_perturbator(
         "retry_count": 0,
         "fallback_used": False,
         "error": None,
+        "revision_calls": [],
     }
     variants: list[dict[str, Any]] = []
+    variant_source = "perturbator"
     if model_tasks:
         try:
             result = client.chat(
@@ -1243,41 +1328,29 @@ def query_planned_perturbator(
             audit["retry_count"] = getattr(result, "retry_count", 0)
             variants = extract_variants(result.content)
         except (OpenRouterError, json.JSONDecodeError, ValueError) as exc:
-            variants = objective.local_variants(parent_eval["prompt"], len(model_tasks))
+            variants = objective.local_variants(
+                parent_eval["prompt"],
+                len(model_tasks) * resolved_refinement_policy.variants_per_task,
+            )
+            variant_source = "fallback"
             if isinstance(exc, OpenRouterError):
                 audit["retry_count"] = _retry_count_from_error(exc)
             audit["fallback_used"] = True
             audit["error"] = str(exc)
 
     audit["model_variant_count"] = len(variants)
-    tasks_by_id = {task.task_id: task for task in model_tasks}
-    unused_tasks = list(model_tasks)
-    enriched: list[dict[str, Any]] = []
-    for variant in variants:
-        requested_task = tasks_by_id.get(str(variant.get("task_id") or ""))
-        if requested_task in unused_tasks:
-            task = requested_task
-            unused_tasks.remove(task)
-        elif unused_tasks:
-            task = unused_tasks.pop(0)
-        else:
-            break
-        enriched.append(
-            {
-                **variant,
-                "task_id": task.task_id,
-                "mutation_task": task.to_jsonable(),
-                "parent_fingerprint": parent_fingerprint.to_jsonable(),
-                "perturbation_plan": task.plan.to_jsonable(),
-                "defense_profile": defense_json,
-                **(
-                    {"perturbation_attempt_id": attempt_id}
-                    if attempt_id
-                    else {}
-                ),
-            }
-        )
-    for task in mutation_tasks:
+    enriched, assignment_audit = _enrich_task_variants(
+        variants=variants,
+        tasks=model_tasks,
+        parent_fingerprint=parent_fingerprint.to_jsonable(),
+        defense_profile=defense_json,
+        attempt_id=attempt_id,
+        generation_stage="initial",
+        variant_source=variant_source,
+        max_assigned_outputs=template_audit["requested_variant_count"],
+        max_assigned_per_task=resolved_refinement_policy.variants_per_task,
+    )
+    for task in selected_tasks:
         if not task.is_control:
             continue
         enriched.insert(
@@ -1290,6 +1363,13 @@ def query_planned_perturbator(
                 "parent_fingerprint": parent_fingerprint.to_jsonable(),
                 "perturbation_plan": task.plan.to_jsonable(),
                 "defense_profile": defense_json,
+                "output_id": (
+                    f"control-{attempt_id or task.parent_candidate_id}-"
+                    f"{task.task_id}"
+                ),
+                "generation_stage": "control",
+                "variant_source": "harness",
+                "task_assignment": "harness_control",
                 **(
                     {"perturbation_attempt_id": attempt_id}
                     if attempt_id
@@ -1297,23 +1377,384 @@ def query_planned_perturbator(
                 ),
             },
         )
+    audit["variant_assignment"] = assignment_audit
+    requested_initial = int(template_audit["requested_variant_count"])
+    audit["generation_contract"] = {
+        "requested": requested_initial,
+        "parsed": len(variants),
+        "underproduced": max(0, requested_initial - len(variants)),
+        "overproduced": max(0, len(variants) - requested_initial),
+        "fulfilled": len(variants) == requested_initial,
+    }
+    audit["variant_counts"] = {
+        "requested_initial": requested_initial,
+        "initial": len(variants),
+        "revision": 0,
+        "total": len(variants),
+        "by_source": {variant_source: len(variants)} if variants else {},
+    }
     audit["parsed_variants"] = enriched
     return enriched, audit["error"], audit
 
 
-def _only_missing_direct_adjudication(validation: dict[str, Any] | None) -> bool:
-    if not validation:
-        return False
-    reasons = validation.get("reasons")
-    return isinstance(reasons, list) and set(reasons) == {"missing_direct_adjudication"}
+def _is_scope_only_plan_derivative(
+    task_plan: PerturbationPlan,
+    attempt_plan: PerturbationPlan,
+) -> bool:
+    """Return whether a task plan changes only the attempt's mutation scope."""
+
+    return (
+        dataclasses.replace(
+            attempt_plan,
+            mutation_scope=task_plan.mutation_scope,
+        )
+        == task_plan
+    )
 
 
-def _append_direct_adjudication(prompt: str) -> str:
-    suffix = " State your considered verdict directly."
-    stripped = prompt.rstrip()
-    if stripped.lower().endswith(suffix.lower().strip()):
-        return stripped
-    return f"{stripped}{suffix}"
+def query_perturbator_revision(
+    *,
+    client: OpenRouterClient | DryRunClient,
+    objective: ModuleType,
+    objective_text: str,
+    objective_config: dict[str, Any],
+    perturbator_model: str,
+    parent_eval: dict[str, Any],
+    attempt_plan: PerturbationPlan,
+    archive: MapElitesArchive,
+    affordances: TargetAffordanceTracker,
+    tasks: list[MutationTask],
+    feedback: list[dict[str, Any]],
+    defense_profile: dict[str, Any],
+    parent_fingerprint: dict[str, Any],
+    perturbator_temperature: float,
+    perturbator_max_tokens: int | None,
+    template_config: dict[str, Any] | None = None,
+    attempt_id: str = "",
+) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
+    """Request one bounded validator-guided replacement per failed task."""
+
+    if not tasks:
+        raise ValueError("revision requires at least one mutation task")
+    ordered_task_ids = [task.task_id for task in tasks]
+    if len(ordered_task_ids) != len(set(ordered_task_ids)):
+        raise ValueError("revision mutation task ids must be unique")
+    parent_candidate_id = str(parent_eval.get("candidate_id") or "")
+    if any(task.parent_candidate_id != parent_candidate_id for task in tasks):
+        raise ValueError("revision mutation tasks must match the parent candidate")
+    if attempt_plan.parent_candidate_id != parent_candidate_id:
+        raise ValueError("revision attempt plan must match the parent candidate")
+    if attempt_plan.objective_id != objective.OBJECTIVE_ID:
+        raise ValueError("revision attempt plan must match the objective")
+    if any(
+        not _is_scope_only_plan_derivative(task.plan, attempt_plan)
+        for task in tasks
+    ):
+        raise ValueError(
+            "revision mutation tasks must be scope-only derivatives of the "
+            "attempt perturbation plan"
+        )
+    ordered_feedback_ids = [str(item.get("task_id") or "") for item in feedback]
+    if (
+        len(ordered_feedback_ids) != len(ordered_task_ids)
+        or len(ordered_feedback_ids) != len(set(ordered_feedback_ids))
+        or set(ordered_feedback_ids) != set(ordered_task_ids)
+    ):
+        raise ValueError("revision feedback must match the revised mutation tasks")
+    archive_context = sorted(
+        archive.elites(), key=lambda item: item["score"]["total"], reverse=True
+    )
+    messages, template_audit = build_planned_perturbation_request(
+        objective=objective,
+        objective_text=objective_text,
+        objective_config=objective_config,
+        parent_eval=parent_eval,
+        offspring_count=len(tasks),
+        archive_context=archive_context,
+        target_affordances=affordances.to_perturbator_context(),
+        plan=attempt_plan,
+        defense_profile=defense_profile,
+        mutation_tasks=tasks,
+        parent_fingerprint=parent_fingerprint,
+        variants_per_task=1,
+        generation_stage="revision",
+        revision_feedback_items=feedback,
+        template_config=template_config,
+    )
+    audit: dict[str, Any] = {
+        "request_messages": messages,
+        "template_audit": template_audit,
+        "perturbation_plan": attempt_plan.to_jsonable(),
+        "task_ids": [task.task_id for task in tasks],
+        "feedback": feedback,
+        "raw_response": None,
+        "finish_reason": None,
+        "usage": {},
+        "retry_count": 0,
+        "fallback_used": False,
+        "error": None,
+    }
+    variants: list[dict[str, Any]] = []
+    try:
+        result = client.chat(
+            model=perturbator_model,
+            messages=messages,
+            temperature=perturbator_temperature,
+            max_tokens=perturbator_max_tokens,
+            response_format={"type": "json_object"},
+        )
+        audit["raw_response"] = result.content
+        audit["finish_reason"] = result.finish_reason
+        audit["usage"] = result.usage
+        audit["retry_count"] = getattr(result, "retry_count", 0)
+        variants = extract_variants(result.content)
+    except (OpenRouterError, json.JSONDecodeError, ValueError) as exc:
+        if isinstance(exc, OpenRouterError):
+            audit["retry_count"] = _retry_count_from_error(exc)
+        audit["error"] = str(exc)
+
+    enriched, assignment_audit = _enrich_task_variants(
+        variants=variants,
+        tasks=tasks,
+        parent_fingerprint=parent_fingerprint,
+        defense_profile=defense_profile,
+        attempt_id=attempt_id,
+        generation_stage="revision",
+        variant_source="perturbator",
+        max_assigned_outputs=template_audit["requested_variant_count"],
+        max_assigned_per_task=1,
+    )
+    audit["model_variant_count"] = len(variants)
+    audit["variant_assignment"] = assignment_audit
+    requested_revision = int(template_audit["requested_variant_count"])
+    audit["generation_contract"] = {
+        "requested": requested_revision,
+        "parsed": len(variants),
+        "underproduced": max(0, requested_revision - len(variants)),
+        "overproduced": max(0, len(variants) - requested_revision),
+        "fulfilled": len(variants) == requested_revision,
+    }
+    audit["parsed_variants"] = enriched
+    return enriched, audit["error"], audit
+
+
+def merge_revision_audit(
+    initial_audit: dict[str, Any],
+    revision_audit: dict[str, Any],
+) -> None:
+    """Fold one bounded revision call into an attempt-level perturbator audit."""
+
+    revision_calls = initial_audit.setdefault("revision_calls", [])
+    if revision_calls:
+        raise ValueError("only one perturbator revision call is supported per attempt")
+    revision_calls.append(revision_audit)
+    initial_count = int(initial_audit.get("model_variant_count", 0) or 0)
+    revision_count = int(revision_audit.get("model_variant_count", 0) or 0)
+    initial_audit["model_variant_count"] = initial_count + revision_count
+    initial_audit["parsed_variants"] = [
+        *list(initial_audit.get("parsed_variants") or ()),
+        *list(revision_audit.get("parsed_variants") or ()),
+    ]
+    initial_audit["usage"] = aggregate_usage(
+        [
+            {"usage": initial_audit.get("usage") or {}},
+            {"usage": revision_audit.get("usage") or {}},
+        ]
+    )
+    initial_audit["retry_count"] = int(
+        initial_audit.get("retry_count", 0) or 0
+    ) + int(revision_audit.get("retry_count", 0) or 0)
+    counts = dict(initial_audit.get("variant_counts") or {})
+    counts["requested_revision"] = int(
+        (revision_audit.get("generation_contract") or {}).get(
+            "requested",
+            0,
+        )
+        or 0
+    )
+    counts["revision"] = revision_count
+    counts["total"] = initial_count + revision_count
+    by_source = dict(counts.get("by_source") or {})
+    if revision_count:
+        by_source["perturbator"] = int(by_source.get("perturbator", 0)) + revision_count
+    counts["by_source"] = by_source
+    initial_audit["variant_counts"] = counts
+    revision_error = revision_audit.get("error")
+    if revision_error:
+        initial_error = initial_audit.get("error")
+        initial_audit["error"] = (
+            f"{initial_error}; revision: {revision_error}"
+            if initial_error
+            else f"revision: {revision_error}"
+        )
+
+
+def _enrich_task_variants(
+    *,
+    variants: list[dict[str, Any]],
+    tasks: list[MutationTask],
+    parent_fingerprint: dict[str, Any],
+    defense_profile: dict[str, Any],
+    attempt_id: str,
+    generation_stage: str,
+    variant_source: str,
+    max_assigned_outputs: int,
+    max_assigned_per_task: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Assign every parsed output to a task without one-output assumptions."""
+
+    if (
+        isinstance(max_assigned_outputs, bool)
+        or not isinstance(max_assigned_outputs, int)
+        or max_assigned_outputs < 0
+    ):
+        raise ValueError("max_assigned_outputs must be a non-negative integer")
+    if (
+        isinstance(max_assigned_per_task, bool)
+        or not isinstance(max_assigned_per_task, int)
+        or max_assigned_per_task <= 0
+    ):
+        raise ValueError("max_assigned_per_task must be a positive integer")
+    tasks_by_id = {task.task_id: task for task in tasks}
+    if len(tasks_by_id) != len(tasks):
+        raise ValueError("mutation task ids must be unique during output assignment")
+    assignment_counts = Counter({task.task_id: 0 for task in tasks})
+    task_positions = {task.task_id: index for index, task in enumerate(tasks)}
+    enriched: list[dict[str, Any]] = []
+    unassigned: list[dict[str, Any]] = []
+    assignment_modes: Counter[str] = Counter()
+    for output_index, variant in enumerate(variants, start=1):
+        requested_task_id = str(variant.get("task_id") or "").strip()
+        if output_index > max_assigned_outputs:
+            output_id = short_hash(
+                f"{attempt_id}|{generation_stage}|{output_index}|"
+                f"{variant.get('prompt', '')}",
+                16,
+            )
+            unassigned.append(
+                {
+                    "output_id": output_id,
+                    "output_index": output_index,
+                    "requested_task_id": requested_task_id,
+                    "generation_stage": generation_stage,
+                    "variant_source": variant_source,
+                    "reason": "overproduction_limit",
+                }
+            )
+            continue
+        task = tasks_by_id.get(requested_task_id)
+        if task is not None:
+            if assignment_counts[task.task_id] >= max_assigned_per_task:
+                output_id = short_hash(
+                    f"{attempt_id}|{generation_stage}|{output_index}|"
+                    f"{variant.get('prompt', '')}",
+                    16,
+                )
+                unassigned.append(
+                    {
+                        "output_id": output_id,
+                        "output_index": output_index,
+                        "requested_task_id": requested_task_id,
+                        "generation_stage": generation_stage,
+                        "variant_source": variant_source,
+                        "reason": "task_overproduction_limit",
+                    }
+                )
+                continue
+            assignment_mode = "exact_task_id"
+        elif tasks:
+            tasks_with_capacity = [
+                item
+                for item in tasks
+                if assignment_counts[item.task_id] < max_assigned_per_task
+            ]
+            if not tasks_with_capacity:
+                output_id = short_hash(
+                    f"{attempt_id}|{generation_stage}|{output_index}|"
+                    f"{variant.get('prompt', '')}",
+                    16,
+                )
+                unassigned.append(
+                    {
+                        "output_id": output_id,
+                        "output_index": output_index,
+                        "requested_task_id": requested_task_id,
+                        "generation_stage": generation_stage,
+                        "variant_source": variant_source,
+                        "reason": "assignment_capacity_exhausted",
+                    }
+                )
+                continue
+            task = min(
+                tasks_with_capacity,
+                key=lambda item: (
+                    assignment_counts[item.task_id],
+                    task_positions[item.task_id],
+                ),
+            )
+            assignment_mode = (
+                "missing_task_id_rebalanced"
+                if not requested_task_id
+                else "unknown_task_id_rebalanced"
+            )
+        else:
+            output_id = short_hash(
+                f"{attempt_id}|{generation_stage}|{output_index}|"
+                f"{variant.get('prompt', '')}",
+                16,
+            )
+            unassigned.append(
+                {
+                    "output_id": output_id,
+                    "output_index": output_index,
+                    "requested_task_id": requested_task_id,
+                    "generation_stage": generation_stage,
+                    "variant_source": variant_source,
+                    "reason": "no_generation_task",
+                }
+            )
+            continue
+
+        assignment_counts[task.task_id] += 1
+        assignment_modes[assignment_mode] += 1
+        output_id = short_hash(
+            f"{attempt_id}|{generation_stage}|{output_index}|"
+            f"{variant.get('prompt', '')}",
+            16,
+        )
+        enriched.append(
+            {
+                **variant,
+                "output_id": output_id,
+                "output_index": output_index,
+                "requested_task_id": requested_task_id or None,
+                "task_id": task.task_id,
+                "task_assignment": assignment_mode,
+                "generation_stage": generation_stage,
+                "variant_source": variant_source,
+                "mutation_task": task.to_jsonable(),
+                "parent_fingerprint": parent_fingerprint,
+                "perturbation_plan": task.plan.to_jsonable(),
+                "defense_profile": defense_profile,
+                **(
+                    {"perturbation_attempt_id": attempt_id}
+                    if attempt_id
+                    else {}
+                ),
+            }
+        )
+    return enriched, {
+        "schema_version": 1,
+        "generation_stage": generation_stage,
+        "parsed": len(variants),
+        "assignment_limit": max_assigned_outputs,
+        "per_task_assignment_limit": max_assigned_per_task,
+        "assigned": len(enriched),
+        "unassigned": unassigned,
+        "assignment_modes": dict(sorted(assignment_modes.items())),
+        "by_task": dict(sorted(assignment_counts.items())),
+        "reconciled": len(variants) == len(enriched) + len(unassigned),
+    }
 
 
 def _rejected_variant_record(
@@ -1323,6 +1764,7 @@ def _rejected_variant_record(
     validation: dict[str, Any] | None,
     transition_validation: dict[str, Any] | None,
     task: MutationTask | None,
+    variant: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "prompt": prompt,
@@ -1330,6 +1772,17 @@ def _rejected_variant_record(
         "validation": validation,
         "transition_validation": transition_validation,
     }
+    if variant is not None:
+        for key in (
+            "output_id",
+            "output_index",
+            "generation_stage",
+            "variant_source",
+            "task_assignment",
+            "requested_task_id",
+        ):
+            if key in variant:
+                record[key] = variant[key]
     if task is not None:
         record.update(
             {
@@ -1342,6 +1795,144 @@ def _rejected_variant_record(
     return record
 
 
+@dataclasses.dataclass(frozen=True)
+class CandidateRefinementResult:
+    """Validated proposal pool and the nominees allowed to reach scheduling."""
+
+    selected_candidates: tuple[Candidate, ...]
+    validated_candidates: tuple[Candidate, ...]
+    rejected: tuple[dict[str, Any], ...]
+    decision: RefinementDecision
+
+    @property
+    def audit(self) -> dict[str, Any]:
+        return self.decision.audit
+
+
+def prepare_refined_candidates(
+    *,
+    assessments: list[VariantAssessment],
+    parent_eval: dict[str, Any],
+    generation: int,
+    seen_prompts: set[str],
+    tasks: list[MutationTask],
+) -> CandidateRefinementResult:
+    """Rank validated alternatives and materialize all audited lifecycles."""
+
+    output_ids = [assessment.output_id for assessment in assessments]
+    if len(output_ids) != len(set(output_ids)):
+        raise ValueError("refinement assessment output ids must be unique")
+    decision = select_refined_assessments(
+        assessments,
+        tasks=tasks,
+        seen_prompts=seen_prompts,
+    )
+    disposition_by_output_id = {
+        item.assessment.output_id: item for item in decision.dispositions
+    }
+    validated_candidates: list[Candidate] = []
+    selected_candidates: list[Candidate] = []
+    for assessment in decision.validated:
+        disposition = disposition_by_output_id[assessment.output_id]
+        candidate = _candidate_from_assessment(
+            assessment=assessment,
+            parent_eval=parent_eval,
+            generation=generation,
+            refinement_disposition=disposition.disposition,
+            rank_position=disposition.rank_position,
+            rank_evidence=disposition.rank_evidence,
+        )
+        validated_candidates.append(candidate)
+        if disposition.disposition == "selected":
+            selected_candidates.append(candidate)
+            if assessment.task is None or not assessment.task.is_control:
+                seen_prompts.add(assessment.normalized_prompt)
+
+    rejected = tuple(
+        _rejected_variant_record(
+            prompt=item.assessment.prompt,
+            reason=item.reason or item.assessment.reason,
+            validation=item.assessment.validation,
+            transition_validation=item.assessment.transition_validation,
+            task=item.assessment.task,
+            variant=item.assessment.variant,
+        )
+        for item in decision.rejected
+    )
+    return CandidateRefinementResult(
+        selected_candidates=tuple(selected_candidates),
+        validated_candidates=tuple(validated_candidates),
+        rejected=rejected,
+        decision=decision,
+    )
+
+
+def _candidate_from_assessment(
+    *,
+    assessment: VariantAssessment,
+    parent_eval: dict[str, Any],
+    generation: int,
+    refinement_disposition: str | None = None,
+    rank_position: int | None = None,
+    rank_evidence: dict[str, Any] | None = None,
+) -> Candidate:
+    task = assessment.task
+    variant = assessment.variant
+    metadata = {
+        key: variant[key]
+        for key in (
+            "perturbation_plan",
+            "defense_profile",
+            "perturbation_attempt_id",
+            "mutation_task",
+            "parent_fingerprint",
+            "output_id",
+            "output_index",
+            "generation_stage",
+            "variant_source",
+            "task_assignment",
+            "requested_task_id",
+        )
+        if key in variant
+    }
+    if assessment.validation:
+        metadata["validation"] = assessment.validation
+    if assessment.repair_metadata:
+        metadata["planned_repair"] = assessment.repair_metadata
+    if assessment.transition_validation:
+        metadata["transition_validation"] = assessment.transition_validation
+    if task is not None:
+        metadata["task_purpose"] = task.purpose.value
+        metadata["archive_eligible"] = task.contract.archive_eligible
+        metadata["parent_relative"] = task.parent_relative
+        metadata["clean_ablation_candidate"] = task.clean_ablation_candidate
+    if refinement_disposition is not None:
+        metadata["refinement"] = {
+            "disposition": refinement_disposition,
+            "rank_position": rank_position,
+            "rank_evidence": rank_evidence or {},
+        }
+    return Candidate(
+        id=make_candidate_id(
+            assessment.prompt,
+            parent_eval["candidate_id"],
+            generation,
+            (
+                f"{parent_eval['source']}|{task.task_id}"
+                if task is not None
+                else parent_eval["source"]
+            ),
+        ),
+        prompt=assessment.prompt,
+        generation=generation,
+        source="planned_perturbator",
+        island=parent_eval["island"],
+        parent_id=parent_eval["candidate_id"],
+        mutation=str(variant.get("mutation", "")),
+        metadata=metadata,
+    )
+
+
 def prepare_candidates(
     *,
     objective: ModuleType,
@@ -1350,179 +1941,269 @@ def prepare_candidates(
     generation: int,
     seen_prompts: set[str],
 ) -> tuple[list[Candidate], list[dict[str, Any]]]:
+    """Compatibility wrapper that validates every variant without task ranking."""
+
+    assessments = assess_candidate_variants(
+        objective=objective,
+        variants=variants,
+        parent_eval=parent_eval,
+    )
     candidates: list[Candidate] = []
     rejected: list[dict[str, Any]] = []
-    for variant in variants:
-        task_data = variant.get("mutation_task")
-        task = (
-            MutationTask.from_jsonable(task_data)
-            if isinstance(task_data, dict)
-            else None
-        )
+    for assessment in assessments:
+        task = assessment.task
         is_control = task is not None and task.is_control
-        prompt = (
-            str(variant["prompt"]).strip()
-            if is_control
-            else re.sub(r"\s+", " ", variant["prompt"]).strip()
-        )
-        valid, reason = validate_variant(prompt, objective)
-        validation: dict[str, Any] | None = None
-        transition_validation: dict[str, Any] | None = None
-        repair_metadata: dict[str, Any] | None = None
-        plan_data = variant.get("perturbation_plan")
-        if valid and isinstance(plan_data, dict):
-            plan = PerturbationPlan.from_jsonable(plan_data)
-            if task is None:
-                validation_result = validate_planned_prompt(
-                    prompt=prompt,
-                    objective=objective,
-                    plan=plan,
-                )
-            else:
-                validation_result = validate_absolute_prompt(
-                    prompt=prompt,
-                    objective=objective,
-                    plan=plan,
-                )
-            validation = validation_result.to_jsonable()
-            if not validation_result.accepted:
-                valid = False
-                reason = "planned_validation:" + ",".join(validation_result.reasons)
-                can_repair_directness = task is None or (
-                    "*" in task.contract.allowed_factors
-                    or "direct_adjudication" in task.contract.allowed_factors
-                )
-                if _only_missing_direct_adjudication(validation) and can_repair_directness:
-                    original_prompt = prompt
-                    repaired_prompt = _append_direct_adjudication(prompt)
-                    repaired_valid, repaired_reason = validate_variant(
-                        repaired_prompt,
-                        objective,
-                    )
-                    if repaired_valid:
-                        if task is None:
-                            repaired_result = validate_planned_prompt(
-                                prompt=repaired_prompt,
-                                objective=objective,
-                                plan=plan,
-                            )
-                        else:
-                            repaired_result = validate_absolute_prompt(
-                                prompt=repaired_prompt,
-                                objective=objective,
-                                plan=plan,
-                            )
-                        if repaired_result.accepted:
-                            prompt = repaired_prompt
-                            valid = True
-                            reason = None
-                            validation = repaired_result.to_jsonable()
-                            repair_metadata = {
-                                "applied": "append_direct_adjudication",
-                                "original_prompt_hash": short_hash(original_prompt, 16),
-                            }
-                        else:
-                            validation = repaired_result.to_jsonable()
-                            reason = "planned_validation:" + ",".join(
-                                repaired_result.reasons
-                            )
-                    else:
-                        reason = repaired_reason
-            if valid and task is not None:
-                parent_fingerprint_data = variant.get("parent_fingerprint")
-                if not isinstance(parent_fingerprint_data, dict):
-                    valid = False
-                    reason = "transition_validation:missing_parent_fingerprint"
-                else:
-                    parent_fingerprint = build_prompt_fingerprint(
-                        objective=objective,
-                        prompt=str(parent_eval.get("prompt", "")),
-                    )
-                    child_fingerprint = build_prompt_fingerprint(
-                        objective=objective,
-                        prompt=prompt,
-                    )
-                    transition_result = validate_transition(
-                        parent=parent_fingerprint,
-                        child=child_fingerprint,
-                        contract=task.contract,
-                        task=task,
-                    )
-                    transition_validation = transition_result.to_jsonable()
-                    if not transition_result.accepted:
-                        valid = False
-                        reason = "transition_validation:" + ",".join(
-                            transition_result.reasons
-                        )
-        normalized = prompt.lower()
-        if not valid:
+        if not assessment.accepted:
             rejected.append(
                 _rejected_variant_record(
-                    prompt=prompt,
-                    reason=reason,
-                    validation=validation,
-                    transition_validation=transition_validation,
+                    prompt=assessment.prompt,
+                    reason=assessment.reason,
+                    validation=assessment.validation,
+                    transition_validation=assessment.transition_validation,
                     task=task,
+                    variant=assessment.variant,
                 )
             )
             continue
-        if normalized in seen_prompts and not is_control:
+        if assessment.normalized_prompt in seen_prompts and not is_control:
             rejected.append(
                 _rejected_variant_record(
-                    prompt=prompt,
+                    prompt=assessment.prompt,
                     reason="duplicate",
-                    validation=validation,
-                    transition_validation=transition_validation,
+                    validation=assessment.validation,
+                    transition_validation=assessment.transition_validation,
                     task=task,
+                    variant=assessment.variant,
                 )
             )
             continue
         if not is_control:
-            seen_prompts.add(normalized)
-        metadata = {
-            key: variant[key]
-            for key in (
-                "perturbation_plan",
-                "defense_profile",
-                "perturbation_attempt_id",
-                "mutation_task",
-                "parent_fingerprint",
-            )
-            if key in variant
-        }
-        if validation:
-            metadata["validation"] = validation
-        if repair_metadata:
-            metadata["planned_repair"] = repair_metadata
-        if transition_validation:
-            metadata["transition_validation"] = transition_validation
-        if task is not None:
-            metadata["task_purpose"] = task.purpose.value
-            metadata["archive_eligible"] = task.contract.archive_eligible
-            metadata["parent_relative"] = task.parent_relative
-            metadata["clean_ablation_candidate"] = task.clean_ablation_candidate
+            seen_prompts.add(assessment.normalized_prompt)
         candidates.append(
-            Candidate(
-                id=make_candidate_id(
-                    prompt,
-                    parent_eval["candidate_id"],
-                    generation,
-                    (
-                        f"{parent_eval['source']}|{task.task_id}"
-                        if task is not None
-                        else parent_eval["source"]
-                    ),
-                ),
-                prompt=prompt,
+            _candidate_from_assessment(
+                assessment=assessment,
+                parent_eval=parent_eval,
                 generation=generation,
-                source="planned_perturbator",
-                island=parent_eval["island"],
-                parent_id=parent_eval["candidate_id"],
-                mutation=variant.get("mutation", ""),
-                metadata=metadata,
             )
         )
     return candidates, rejected
+
+
+def refine_perturbator_attempt(
+    *,
+    client: OpenRouterClient | DryRunClient,
+    objective: ModuleType,
+    objective_text: str,
+    objective_config: dict[str, Any],
+    perturbator_model: str,
+    parent_eval: dict[str, Any],
+    generation: int,
+    initial_variants: list[dict[str, Any]],
+    perturbator_audit: dict[str, Any],
+    refinement_policy: RefinementPolicy,
+    seen_prompts: set[str],
+    archive: MapElitesArchive,
+    affordances: TargetAffordanceTracker,
+    perturbator_temperature: float,
+    perturbator_max_tokens: int | None,
+    template_config: dict[str, Any] | None = None,
+    attempt_id: str = "",
+) -> CandidateRefinementResult:
+    """Validate, optionally revise, and nominate one candidate per task."""
+
+    selected_tasks = [
+        MutationTask.from_jsonable(item)
+        for item in perturbator_audit.get("mutation_tasks") or ()
+    ]
+    initial_assessments = assess_candidate_variants(
+        objective=objective,
+        variants=initial_variants,
+        parent_eval=parent_eval,
+    )
+    initial_decision = select_refined_assessments(
+        initial_assessments,
+        tasks=selected_tasks,
+        seen_prompts=seen_prompts,
+    )
+    feedback = revision_feedback(
+        initial_decision,
+        tasks=selected_tasks,
+    )
+    revision_task_ids = set(initial_decision.missing_task_ids)
+    revision_tasks = [
+        task for task in selected_tasks if task.task_id in revision_task_ids
+    ]
+    revision_skip_reason: str | None = None
+    revision_attempted = False
+    revision_assessments: list[VariantAssessment] = []
+    if not revision_tasks:
+        revision_skip_reason = "all_tasks_have_nominees"
+    elif not refinement_policy.revision_enabled:
+        revision_skip_reason = "revision_disabled"
+    elif perturbator_audit.get("fallback_used"):
+        revision_skip_reason = "initial_call_used_fallback"
+    else:
+        revision_attempted = True
+        raw_attempt_plan = perturbator_audit.get("perturbation_plan")
+        if not isinstance(raw_attempt_plan, dict):
+            raise ValueError(
+                "revision requires an attempt perturbation plan in the "
+                "perturbator audit"
+            )
+        revision_variants, _revision_error, revision_audit = (
+            query_perturbator_revision(
+                client=client,
+                objective=objective,
+                objective_text=objective_text,
+                objective_config=objective_config,
+                perturbator_model=perturbator_model,
+                parent_eval=parent_eval,
+                attempt_plan=PerturbationPlan.from_jsonable(raw_attempt_plan),
+                archive=archive,
+                affordances=affordances,
+                tasks=revision_tasks,
+                feedback=feedback,
+                defense_profile=dict(
+                    perturbator_audit.get("defense_profile") or {}
+                ),
+                parent_fingerprint=dict(
+                    perturbator_audit.get("parent_fingerprint") or {}
+                ),
+                perturbator_temperature=perturbator_temperature,
+                perturbator_max_tokens=perturbator_max_tokens,
+                template_config=template_config,
+                attempt_id=attempt_id,
+            )
+        )
+        merge_revision_audit(perturbator_audit, revision_audit)
+        revision_assessments = assess_candidate_variants(
+            objective=objective,
+            variants=revision_variants,
+            parent_eval=parent_eval,
+        )
+    assessments = [*initial_assessments, *revision_assessments]
+    result = prepare_refined_candidates(
+        assessments=assessments,
+        parent_eval=parent_eval,
+        generation=generation,
+        seen_prompts=seen_prompts,
+        tasks=selected_tasks,
+    )
+    model_assessment_count = sum(
+        assessment.task is not None and not assessment.task.is_control
+        for assessment in assessments
+    )
+    unassigned_output_count = len(
+        (perturbator_audit.get("variant_assignment") or {}).get(
+            "unassigned",
+            (),
+        )
+    ) + sum(
+        len((call.get("variant_assignment") or {}).get("unassigned", ()))
+        for call in perturbator_audit.get("revision_calls") or ()
+        if isinstance(call, dict)
+    )
+    assigned_output_count = int(
+        (perturbator_audit.get("variant_assignment") or {}).get(
+            "assigned",
+            0,
+        )
+        or 0
+    ) + sum(
+        int((call.get("variant_assignment") or {}).get("assigned", 0) or 0)
+        for call in perturbator_audit.get("revision_calls") or ()
+        if isinstance(call, dict)
+    )
+    selected_ids = {candidate.id for candidate in result.selected_candidates}
+    validated_ids = {candidate.id for candidate in result.validated_candidates}
+    model_validated_count = sum(
+        assessment.task is None or not assessment.task.is_control
+        for assessment in result.decision.validated
+    )
+    model_rejected_count = sum(
+        item.assessment.task is None or not item.assessment.task.is_control
+        for item in result.decision.rejected
+    )
+    model_selected_count = sum(
+        assessment.task is None or not assessment.task.is_control
+        for assessment in result.decision.selected
+    )
+    control_validated_count = sum(
+        assessment.task is not None and assessment.task.is_control
+        for assessment in result.decision.validated
+    )
+    perturbator_audit["refinement"] = {
+        "schema_version": 1,
+        "policy": refinement_policy.to_jsonable(),
+        "initial": initial_decision.audit,
+        "revision": {
+            "attempted": revision_attempted,
+            "skip_reason": revision_skip_reason,
+            "needed_task_ids": [task.task_id for task in revision_tasks],
+            "task_ids": (
+                [task.task_id for task in revision_tasks]
+                if revision_attempted
+                else []
+            ),
+            "feedback": feedback,
+            "resolved_task_ids": (
+                sorted(
+                    revision_task_ids - set(result.decision.missing_task_ids)
+                )
+                if revision_attempted
+                else []
+            ),
+            "unresolved_task_ids": (
+                sorted(
+                    revision_task_ids.intersection(
+                        result.decision.missing_task_ids
+                    )
+                )
+                if revision_attempted
+                else []
+            ),
+            "remaining_missing_task_ids": list(
+                result.decision.missing_task_ids
+            ),
+        },
+        "final": result.audit,
+        "accounting": {
+            "produced_model_outputs": int(
+                perturbator_audit.get("model_variant_count", 0) or 0
+            ),
+            "validated_model_outputs": model_validated_count,
+            "selected_model_outputs": model_selected_count,
+            "ranked_out_model_outputs": (
+                model_validated_count - model_selected_count
+            ),
+            "rejected_model_outputs": model_rejected_count,
+            "unassigned_model_outputs": unassigned_output_count,
+            "validated_controls": control_validated_count,
+        },
+        "invariants": {
+            "assigned_outputs_assessed": (
+                assigned_output_count == model_assessment_count
+            ),
+            "model_outputs_reconciled": (
+                int(perturbator_audit.get("model_variant_count", 0) or 0)
+                == assigned_output_count + unassigned_output_count
+            ),
+            "model_lifecycles_reconciled": (
+                int(perturbator_audit.get("model_variant_count", 0) or 0)
+                == model_validated_count
+                + model_rejected_count
+                + unassigned_output_count
+            ),
+            "selected_candidates_are_validated": selected_ids.issubset(
+                validated_ids
+            ),
+            "revision_call_is_bounded": len(
+                perturbator_audit.get("revision_calls") or ()
+            )
+            <= 1,
+        },
+    }
+    return result
 
 
 def _seed_entry_from_evaluation(
@@ -2149,6 +2830,12 @@ def run_for_target(
             config.get("operator_block_after_regressions", 1)
         ),
     )
+    scheduling_policy = SchedulingPolicy.from_config(
+        config.get("perturbation_scheduler")
+    )
+    refinement_policy = RefinementPolicy.from_config(
+        config.get("perturbation_refinement")
+    )
     archive = MapElitesArchive(config["archive_per_cell"], feature_keys)
     target_run_instance_id = short_hash(
         f"{objective.OBJECTIVE_ID}|{target_model}|{utc_now()}",
@@ -2213,6 +2900,10 @@ def run_for_target(
         "search_attempts_completed": 0,
         "optimization_end_to_end_rate": 0.0,
         "optimization_valid_rate": 0.0,
+        "optimization_nomination_rate": 0.0,
+        "optimization_nomination_headroom": 0.0,
+        "optimization_target_feasible_from_nominations": None,
+        "revision_task_success_rate": 0.0,
         "optimization_conditional_rate": 0.0,
         "optimization_target_gap": -0.5,
         "discovery_success_rate": 0.0,
@@ -2329,9 +3020,37 @@ def run_for_target(
                 template_config=template_config,
                 outcome_memory=outcome_memory,
                 operator_ledger=operator_ledger,
+                scheduling_policy=scheduling_policy,
+                refinement_policy=refinement_policy,
                 perturbation_config=config,
                 generation=generation,
                 attempt_id=attempt_id,
+            )
+            refinement = refine_perturbator_attempt(
+                client=client,
+                objective=objective,
+                objective_text=config["objective_text"],
+                objective_config=config.get("objective_config", {}),
+                perturbator_model=perturbator_model,
+                parent_eval=parent_eval,
+                generation=generation,
+                initial_variants=variants,
+                perturbator_audit=perturbator_audit,
+                refinement_policy=refinement_policy,
+                seen_prompts=seen_prompts,
+                archive=archive,
+                affordances=affordances,
+                perturbator_temperature=config["perturbator_temperature"],
+                perturbator_max_tokens=config["perturbator_max_tokens"],
+                template_config=template_config,
+                attempt_id=attempt_id,
+            )
+            candidates = list(refinement.selected_candidates)
+            validated_candidates = list(refinement.validated_candidates)
+            rejected = list(refinement.rejected)
+            error = perturbator_audit.get("error")
+            refinement_accounting = (
+                perturbator_audit.get("refinement", {}).get("accounting", {})
             )
             append_jsonl(
                 generation_traces_path,
@@ -2366,13 +3085,6 @@ def run_for_target(
                 state["perturbator_fallback_count"] = int(
                     state.get("perturbator_fallback_count", 0)
                 ) + 1
-            candidates, rejected = prepare_candidates(
-                objective=objective,
-                variants=variants,
-                parent_eval=parent_eval,
-                generation=generation,
-                seen_prompts=seen_prompts,
-            )
             generation_candidates.extend(candidates)
             search_stats.record_perturbator_result(
                 attempt_id=attempt_id,
@@ -2380,7 +3092,7 @@ def run_for_target(
                 produced=int(
                     perturbator_audit.get("model_variant_count", len(variants))
                 ),
-                accepted_candidates=candidates,
+                accepted_candidates=validated_candidates,
                 rejected=rejected,
                 audit=perturbator_audit,
                 error=error,
@@ -2397,6 +3109,15 @@ def run_for_target(
                     "generation": generation,
                     "perturbation_plan": perturbator_audit.get("perturbation_plan"),
                     "mutation_tasks": perturbator_audit.get("mutation_tasks"),
+                    "mutation_task_schedule": perturbator_audit.get(
+                        "mutation_task_schedule"
+                    ),
+                    "mutation_task_accounting": perturbator_audit.get(
+                        "mutation_task_accounting"
+                    ),
+                    "deferred_mutation_tasks": perturbator_audit.get(
+                        "deferred_mutation_tasks"
+                    ),
                     "blocked_mutation_tasks": perturbator_audit.get(
                         "blocked_mutation_tasks"
                     ),
@@ -2404,24 +3125,60 @@ def run_for_target(
                     "produced": int(
                         perturbator_audit.get("model_variant_count", len(variants))
                     ),
-                    "accepted": len(candidates),
+                    "validated": refinement_accounting.get(
+                        "validated_model_outputs",
+                        0,
+                    ),
+                    "selected": refinement_accounting.get(
+                        "selected_model_outputs",
+                        0,
+                    ),
+                    "ranked_out": refinement_accounting.get(
+                        "ranked_out_model_outputs",
+                        0,
+                    ),
+                    "controls": refinement_accounting.get(
+                        "validated_controls",
+                        0,
+                    ),
                     "rejected": rejected,
                     "error": error,
                     "audit": perturbator_audit,
                 },
             )
 
-        remaining_budget = None
+        remaining_budget: int | None = None
         if config["max_evaluations"]:
             remaining_budget = max(0, config["max_evaluations"] - state["evaluations"])
-        if remaining_budget is not None:
-            generation_candidates = generation_candidates[:remaining_budget]
+        candidate_schedule = schedule_candidates(
+            generation_candidates,
+            budget=remaining_budget,
+            policy=scheduling_policy,
+        )
+        append_jsonl(
+            generation_traces_path,
+            {
+                "timestamp": utc_now(),
+                "objective_id": objective.OBJECTIVE_ID,
+                "target_model": target_model,
+                "perturbator_model": perturbator_model,
+                "generation": generation,
+                "trace_type": "candidate_schedule",
+                "audit": candidate_schedule.audit,
+            },
+        )
+        state["generation_accepted_candidate_count"] = len(generation_candidates)
+        state["generation_candidate_count"] = len(candidate_schedule.scheduled)
+        state["generation_deferred_candidate_count"] = len(candidate_schedule.deferred)
+        state["generation_schedule_by_purpose"] = candidate_schedule.audit[
+            "by_purpose"
+        ]
+        generation_candidates = list(candidate_schedule.scheduled)
         scheduled_candidates = list(generation_candidates)
         archive_before_generation = archive.snapshot()
         generation_evals: list[dict[str, Any]] = []
         if generation_candidates:
             state["phase"] = "evaluating_generation"
-            state["generation_candidate_count"] = len(generation_candidates)
             write_status(out_dir, state)
             parent_evaluations = {
                 str(parent.get("candidate_id", "")): parent

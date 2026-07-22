@@ -67,14 +67,19 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 
 - `events.jsonl`: one record for every prompt delivered to a target model, including the response, score, feature cell, parent id, and errors.
 - For LLM-judged objectives, each event also includes judge request messages, raw responses, parsed member scores, usage, quorum/aggregation details, and fallback status.
-- `perturbations.jsonl`: one record for each perturbator request, including the exact perturbator request messages, raw perturbator response, parsed variants, fallback status, and rejected variants.
-- `generation_traces.jsonl`: one record for each perturbator call, including the selected plan, defense profile, rendered request, raw response, and parsed variants.
+- `perturbations.jsonl`: one record for each perturbation attempt, including
+  exact initial and optional revision requests, raw responses, parsed variants,
+  validator ranking, fallback status, and rejected variants.
+- `generation_traces.jsonl`: one record for each perturbation attempt, including
+  the selected plan, defense profile, rendered initial request, optional bounded
+  revision call, raw responses, and parsed variants.
 - `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
 - `parent_plan_outcomes.jsonl`: per-generation parent-plan outcome records used by outcome memory; this does not duplicate target responses from `events.jsonl`.
 - `operator_outcomes.jsonl`: quality-aware outcomes for individual mutation operators and factors, including persistent run-local blocking decisions.
-- `search_stats.jsonl`: append-only schema-v3 records for every produced variant,
-  including task purpose, lifecycle stage, terminal outcome, validation, budget,
-  score comparison, and final archive retention.
+- `search_stats.jsonl`: append-only schema-v4 records for every produced variant,
+  including task purpose, lifecycle stage, terminal outcome, validation,
+  pre-target refinement disposition, budget, score comparison, and final
+  archive retention.
 - `run_statistics.json`: live aggregate perturbator effectiveness by target, parent cell, strategy, route/case, and generation.
 - `affordances_<model>.json`: compact target-specific framing cues extracted from observed responses, such as preferred terms, visible reasoning cues, successful frames, failed frames, and refusal cues.
 - `archive_<model>.json`: best prompts per MAP-Elites feature cell.
@@ -91,8 +96,16 @@ The optimization headline is `optimization_end_to_end_rate`: improved
 optimization variants divided by every perturbator-produced optimization
 variant. Invalid, duplicate, truncated, errored, and unscored outputs therefore
 remain denominator failures. `optimization_valid_rate` isolates validation
-yield, while `optimization_conditional_rate` reports improvement only among
-comparable evaluations. Discovery, diagnostic, replay-control, and local
+yield, `optimization_nomination_rate` shows how many raw optimization proposals
+survive pre-target ranking, and `optimization_conditional_rate` reports
+improvement only among comparable evaluations. No proposal can improve without
+nomination, so nomination rate is the measured upper
+bound on `optimization_end_to_end_rate`; the summary reports whether that bound
+still makes the 50% target feasible. A valid oversampled alternative
+that loses ranking remains a visible `truncated` lifecycle with
+`refinement_disposition: ranked_out`; it is not mislabeled invalid or budget
+truncation. `revision_task_success_rate` reports how often the single bounded
+revision recovered a nominee. Discovery, diagnostic, replay-control, and local
 fallback outcomes are reported separately and cannot enter the 50% optimization
 goal. Scores also carry `quality` (`confirmed`, `degraded`, or `unscored`);
 unscored judge fallbacks remain audited but are excluded from parent/child
@@ -183,6 +196,36 @@ confidence. Exact replay controls can be enabled; they run before search
 candidates, remain in `events.jsonl`, bypass duplicate rejection, and never
 enter MAP-Elites. A valid replay becomes the contemporaneous comparison baseline
 for that parent's children and exposes target/judge variance separately.
+Controls do not consume the perturbator's `offspring_per_parent` generation
+quota. Before generation, the purpose-aware scheduler selects that many model
+tasks from the available portfolio by relative purpose weight; unused tasks and
+their reasons remain in the perturbation audit. After validation, the same
+policy allocates the remaining target-call budget instead of truncating
+candidates in arrival order. It gives each perturbation attempt one work slot
+before repeats, then uses weighted round-robin allocation across optimization,
+discovery, and diagnostic work.
+For each selected non-control task, the perturbator proposes two alternatives
+by default. Absolute and parent-relative validators score every alternative,
+then a deterministic rank based on contract tier, confidence, objective fit,
+directness, artifact freedom, plan alignment, and stable tie-breaking nominates
+at most one child per task. For optimization and diagnostic tasks, contract
+confidence and retention lead the rank; discovery first enforces absolute
+quality and then favors novelty.
+If a task has no admissible nominee, the harness may
+make one bounded revision call containing validator reasons for only those
+failed tasks. Revision output passes the same validators and ranking; it never
+bypasses the contract. Controls are generated by the harness and are neither
+oversampled nor revised. All raw alternatives remain reconciled in the audit
+and all-output effectiveness denominator even though only nominees can consume
+target calls.
+Weighted parent selection is without replacement within a generation, so one
+high-scoring elite cannot silently create duplicate attempts that defeat that
+fairness boundary.
+Replay controls are admitted only for attempts with scheduled work and only
+after the one-work-slot fairness floor has been met. Every decision, including
+deferred candidate ids and reasons, is recorded as a `candidate_schedule` entry
+in `generation_traces.jsonl`; `search_stats.jsonl` retains the corresponding
+canonical `truncated` lifecycle outcomes.
 Malformed judge JSON is retried before a result becomes an audited, unscored
 fallback. Optional paired rejudging symmetrically confirms every apparent
 improvement and unusually large regression without changing the original target
@@ -281,6 +324,19 @@ Optional trust-region and reliability controls:
   "perturbation_trust_min_similarity": 0.8,
   "perturbation_max_component_drop": 5,
   "perturbation_replay_control_enabled": true,
+  "perturbation_scheduler": {
+    "purpose_weights": {
+      "optimization": 4,
+      "discovery": 1,
+      "diagnostic": 1
+    },
+    "max_controls_per_attempt": 1,
+    "max_control_share": 0.25
+  },
+  "perturbation_refinement": {
+    "variants_per_task": 2,
+    "revision_enabled": true
+  },
   "operator_outcome_memory_enabled": true,
   "operator_block_after_regressions": 1,
   "judge_parse_retries": 1,
@@ -288,6 +344,22 @@ Optional trust-region and reliability controls:
   "paired_rejudge_drop_threshold": 30
 }
 ```
+
+Scheduler weights are relative and work-conserving: an unavailable purpose
+never leaves target-call budget idle. The default reserves an optimization
+majority when all work purposes are available. A replay control is useful only
+as a paired baseline, so orphan controls and controls above the per-attempt cap
+are deferred even when the target-call budget is otherwise unbounded. Controls
+also occupy at most the configured share of a generation's scheduled target
+calls, rounded up when a small budget can support one useful pair.
+`perturbation_refinement.variants_per_task` accepts `1` through `8`. Setting it
+to `1` and disabling revision restores single-proposal behavior while retaining
+the same validation and audit schema. Revision is always capped at one call per
+attempt and requests one replacement for each task that lacks a nominee. Since
+only one proposal per task is nominated, nomination rate is also the hard upper
+bound on the all-produced improvement rate; the default of two keeps the 50%
+goal mathematically attainable, while larger oversampling factors deliberately
+trade that headline ceiling for more pre-target choice.
 
 Legacy `judge_model` configuration remains supported as a singleton panel.
 `OPENROUTER_JUDGE_MODEL` remains supported for a singleton or comma-separated

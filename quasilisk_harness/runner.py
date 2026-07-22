@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import json
 import os
@@ -19,6 +20,8 @@ from .core import (
     write_summary,
 )
 from .objectives.loader import BUILTIN_OBJECTIVES, load_objective
+from .perturbation.refinement import RefinementPolicy
+from .perturbation.scheduler import SchedulingPolicy
 from .utils import safe_slug, split_models, write_json, write_status
 
 
@@ -69,6 +72,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "perturbation_trust_min_similarity": 0.8,
     "perturbation_max_component_drop": 5.0,
     "perturbation_replay_control_enabled": False,
+    "perturbation_scheduler": SchedulingPolicy().to_jsonable(),
+    "perturbation_refinement": RefinementPolicy().to_jsonable(),
     "operator_outcome_memory_enabled": True,
     "operator_block_after_regressions": 1,
     "judge_parse_retries": 1,
@@ -227,7 +232,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
 
 
 def merge_config(file_config: dict[str, Any], cli_args: argparse.Namespace) -> dict[str, Any]:
-    config = dict(DEFAULT_CONFIG)
+    config = copy.deepcopy(DEFAULT_CONFIG)
     config.update(file_config)
     if "perturbation_architecture_version" in config:
         config.pop("perturbation_architecture_version", None)
@@ -420,6 +425,20 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("objective_config must be a JSON object")
     if not isinstance(config.get("templates"), dict):
         raise SystemExit("templates must be a JSON object")
+    try:
+        scheduling_policy = SchedulingPolicy.from_config(
+            config.get("perturbation_scheduler")
+        )
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"Invalid perturbation_scheduler: {exc}") from exc
+    config["perturbation_scheduler"] = scheduling_policy.to_jsonable()
+    try:
+        refinement_policy = RefinementPolicy.from_config(
+            config.get("perturbation_refinement")
+        )
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"Invalid perturbation_refinement: {exc}") from exc
+    config["perturbation_refinement"] = refinement_policy.to_jsonable()
     judge_models = config.get("judge_models")
     if not isinstance(judge_models, list) or not all(
         isinstance(model, str) and model.strip() for model in judge_models

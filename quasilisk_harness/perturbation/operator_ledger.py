@@ -75,9 +75,11 @@ class OperatorOutcomeLedger:
                 blocked.append(
                     {
                         "task_id": task.task_id,
+                        "task_purpose": task.purpose.value,
                         "operator_id": task.operator_id,
                         "factor": task.factor,
                         "reason": "operator_outcome_blocked",
+                        "mutation_task": task.to_jsonable(),
                     }
                 )
             else:

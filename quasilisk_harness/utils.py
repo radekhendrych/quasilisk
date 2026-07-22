@@ -128,6 +128,15 @@ def extract_variants(text: str) -> list[dict[str, str]]:
                 task_id = str(item.get("task_id") or "").strip()
                 if task_id:
                     variant["task_id"] = task_id
+                candidate_index = item.get("candidate_index")
+                if candidate_index is not None and not isinstance(
+                    candidate_index,
+                    bool,
+                ):
+                    try:
+                        variant["candidate_index"] = str(int(candidate_index))
+                    except (TypeError, ValueError):
+                        pass
                 variants.append(variant)
     return variants
 
