@@ -16,6 +16,7 @@ from typing import Any
 
 from ..utils import short_hash
 from .models import MutationTask, TaskPurpose
+from .rejection_memory import normalized_prompt_key
 
 
 MAX_VARIANTS_PER_TASK = 8
@@ -140,6 +141,7 @@ def select_refined_assessments(
     *,
     tasks: Sequence[MutationTask],
     seen_prompts: set[str] | None = None,
+    rejected_prompts: set[str] | None = None,
 ) -> RefinementDecision:
     """Nominate one validator-preferred, unique prompt for each mutation task."""
 
@@ -180,8 +182,13 @@ def select_refined_assessments(
         )
 
     existing_prompts = {
-        str(prompt).strip().lower()
+        normalized_prompt_key(str(prompt))
         for prompt in (seen_prompts or set())
+        if str(prompt).strip()
+    }
+    rejected_prompt_keys = {
+        normalized_prompt_key(str(prompt))
+        for prompt in (rejected_prompts or set())
         if str(prompt).strip()
     }
     by_task: dict[str, list[VariantAssessment]] = {
@@ -201,6 +208,7 @@ def select_refined_assessments(
             task,
             by_task[task.task_id],
             existing_prompts=existing_prompts,
+            rejected_prompt_keys=rejected_prompt_keys,
             selected_prompt_keys=selected_prompt_keys,
         )
         for disposition in task_dispositions:
@@ -209,7 +217,9 @@ def select_refined_assessments(
                 selected.append(disposition.assessment)
                 if not task.is_control:
                     selected_prompt_keys.add(
-                        disposition.assessment.normalized_prompt
+                        normalized_prompt_key(
+                            disposition.assessment.normalized_prompt
+                        )
                     )
             elif disposition.disposition == "ranked_out":
                 deferred.append(disposition.assessment)
@@ -266,21 +276,61 @@ def revision_feedback(
         )
         if not task_dispositions:
             reasons["missing_model_output"] += 1
+        diagnostic_items = [
+            dict(item.assessment.transition_validation.get("diagnostics") or {})
+            for item in task_dispositions
+            if isinstance(item.assessment.transition_validation, dict)
+        ]
+        required_values: dict[str, Any] = {}
+        for diagnostics in diagnostic_items:
+            values = diagnostics.get("protected_factor_requirements")
+            if isinstance(values, dict):
+                required_values.update(values)
         feedback.append(
             {
                 "task_id": task.task_id,
+                "intended_factor": task.factor,
                 "failure_reasons": dict(sorted(reasons.items())),
+                "required_protected_values": dict(sorted(required_values.items())),
                 "failed_outputs": [
                     {
                         "output_id": item.assessment.output_id,
                         "prompt_hash": short_hash(item.assessment.prompt, 16),
+                        "prompt": item.assessment.prompt,
                         "reason": item.reason or item.assessment.reason,
+                        "changed_factors": list(
+                            (
+                                (
+                                    item.assessment.transition_validation or {}
+                                ).get("diagnostics")
+                                or {}
+                            ).get("changed_factors", [])
+                        ),
+                        "factor_deltas": dict(
+                            (
+                                (
+                                    item.assessment.transition_validation or {}
+                                ).get("diagnostics")
+                                or {}
+                            ).get("factor_deltas", {})
+                        ),
+                        "first_surface_delta": (
+                            (
+                                (
+                                    item.assessment.transition_validation or {}
+                                ).get("diagnostics")
+                                or {}
+                            ).get("first_surface_delta")
+                        ),
                     }
                     for item in task_dispositions[:3]
                 ],
                 "revision_instruction": (
-                    "Return one distinct replacement that obeys this task's "
-                    "contract and resolves every listed failure."
+                    f"Return one distinct replacement that changes the declared "
+                    f"factor {task.factor!r}, preserves every required factor value, "
+                    "and resolves every listed failure. For answer_shape, change "
+                    "the semantic response structure rather than only substituting "
+                    "synonyms. Do not repeat any failed prompt."
                 ),
             }
         )
@@ -292,6 +342,7 @@ def _decide_task_assessments(
     assessments: Sequence[VariantAssessment],
     *,
     existing_prompts: set[str],
+    rejected_prompt_keys: set[str],
     selected_prompt_keys: set[str],
 ) -> list[AssessmentDisposition]:
     dispositions: list[AssessmentDisposition] = []
@@ -306,7 +357,17 @@ def _decide_task_assessments(
                 )
             )
             continue
-        if not task.is_control and assessment.normalized_prompt in existing_prompts:
+        prompt_key = normalized_prompt_key(assessment.normalized_prompt)
+        if not task.is_control and prompt_key in rejected_prompt_keys:
+            dispositions.append(
+                AssessmentDisposition(
+                    assessment=assessment,
+                    disposition="rejected",
+                    reason="duplicate_rejected",
+                )
+            )
+            continue
+        if not task.is_control and prompt_key in existing_prompts:
             dispositions.append(
                 AssessmentDisposition(
                     assessment=assessment,
@@ -322,7 +383,7 @@ def _decide_task_assessments(
     observed_prompt_keys: set[str] = set()
     for rank_position, assessment in enumerate(ranked, start=1):
         rank_evidence = assessment_rank_evidence(assessment)
-        prompt_key = assessment.normalized_prompt
+        prompt_key = normalized_prompt_key(assessment.normalized_prompt)
         if not task.is_control and prompt_key in observed_prompt_keys:
             disposition = AssessmentDisposition(
                 assessment=assessment,

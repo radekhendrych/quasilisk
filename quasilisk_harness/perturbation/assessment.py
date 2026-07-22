@@ -10,6 +10,7 @@ from ..utils import MAX_PROMPT_CHARS, has_forbidden_variant_pattern, short_hash
 from .fingerprint import build_prompt_fingerprint
 from .models import MutationTask, PerturbationPlan
 from .refinement import VariantAssessment
+from .rejection_memory import normalized_prompt_key
 from .validator import (
     validate_absolute_prompt,
     validate_planned_prompt,
@@ -83,6 +84,7 @@ def assess_candidate_variants(
                     prompt=prompt,
                     objective=objective,
                     plan=plan,
+                    parent_relative=task.parent_relative,
                 )
             if validation_result is not None:
                 validation = validation_result.to_jsonable()
@@ -117,6 +119,7 @@ def assess_candidate_variants(
                                 prompt=repaired_prompt,
                                 objective=objective,
                                 plan=plan,
+                                parent_relative=task.parent_relative,
                             )
                         if repaired_result.accepted:
                             prompt = repaired_prompt
@@ -188,7 +191,7 @@ def assess_candidate_variants(
                 variant=variant,
                 task=task,
                 prompt=prompt,
-                normalized_prompt=prompt.lower(),
+                normalized_prompt=normalized_prompt_key(prompt),
                 accepted=valid,
                 reason=reason,
                 validation=validation,

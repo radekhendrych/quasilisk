@@ -106,6 +106,7 @@ class PromptFingerprint:
     protected_spans: tuple[str, ...]
     normalized_tokens: tuple[str, ...]
     fingerprint_hash: str
+    surface_text: str = ""
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -113,6 +114,7 @@ class PromptFingerprint:
             "protected_spans": list(self.protected_spans),
             "normalized_tokens": list(self.normalized_tokens),
             "fingerprint_hash": self.fingerprint_hash,
+            "surface_text": self.surface_text,
         }
 
     @classmethod
@@ -124,6 +126,7 @@ class PromptFingerprint:
                 str(item) for item in data.get("normalized_tokens") or ()
             ),
             fingerprint_hash=str(data.get("fingerprint_hash", "")),
+            surface_text=str(data.get("surface_text", "")),
         )
 
 

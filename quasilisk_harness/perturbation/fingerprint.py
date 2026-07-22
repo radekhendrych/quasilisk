@@ -8,6 +8,8 @@ from types import ModuleType
 from typing import Any
 
 from quasilisk_harness.objectives.moral_common import (
+    classify_answer_shape,
+    contains_argument_adjudication,
     contains_conditional_scaffold,
     contains_philosophical_label,
 )
@@ -16,16 +18,6 @@ from quasilisk_harness.perturbation.space import case_keywords_for_objective
 from quasilisk_harness.utils import short_hash
 
 
-_DIRECT_TERMS = (
-    "direct verdict",
-    "clear verdict",
-    "considered verdict",
-    "answer directly",
-    "state plainly",
-    "does it follow",
-    "evaluate",
-    "assess",
-)
 _HARM_TERMS = (
     "harm",
     "suffering",
@@ -37,31 +29,23 @@ _HARM_TERMS = (
     "emergency",
     "violence",
 )
-_DIRECT_FORM_TERMS = (
-    "give one direct verdict",
-    "state one direct verdict",
-    "state one clear verdict",
-    "state one unambiguous answer",
-    "give your verdict",
-    "state your",
-    "answer directly",
-    "direct verdict",
-    "clear verdict",
-    "considered verdict",
-    "does it follow",
-    "evaluate",
-    "assess",
-)
 
 FEATURE_ALIASES = {
     "argument_frame": "argument_route",
     "pressure_style": "pressure_pattern",
     "output_shape": "commitment_form",
+    "direct_adjudication_form": "answer_shape",
 }
 
 
 def normalized_tokens(text: str) -> tuple[str, ...]:
     return tuple(re.findall(r"[\w'-]+", text.lower()))
+
+
+def normalized_surface(text: str) -> str:
+    """Normalize whitespace while preserving punctuation and letter case."""
+
+    return re.sub(r"\s+", " ", str(text)).strip()
 
 
 def canonical_factor(factor: str) -> str:
@@ -109,14 +93,6 @@ def _infer_case_family(objective_id: str, prompt: str) -> str:
     return "objective_anchor"
 
 
-def _direct_adjudication_form(prompt: str) -> str:
-    lower = prompt.lower()
-    for term in _DIRECT_FORM_TERMS:
-        if term in lower:
-            return term
-    return "none"
-
-
 def _case_detail_signature(objective_id: str, prompt: str) -> str:
     lower = prompt.lower()
     hits: list[str] = []
@@ -149,6 +125,7 @@ def build_prompt_fingerprint(
     prompt: str,
 ) -> PromptFingerprint:
     tokens = normalized_tokens(prompt)
+    surface_text = normalized_surface(prompt)
     lower = prompt.lower()
     try:
         features = {
@@ -162,8 +139,8 @@ def build_prompt_fingerprint(
         "case_family": _infer_case_family(objective.OBJECTIVE_ID, prompt),
         "conditional_scaffold": bool(contains_conditional_scaffold(lower)),
         "category_label": bool(contains_philosophical_label(lower)),
-        "direct_adjudication": any(term in lower for term in _DIRECT_TERMS),
-        "direct_adjudication_form": _direct_adjudication_form(prompt),
+        "direct_adjudication": contains_argument_adjudication(prompt),
+        "answer_shape": classify_answer_shape(prompt),
         "harm_application": any(term in lower for term in _HARM_TERMS),
         "case_detail": _case_detail_signature(objective.OBJECTIVE_ID, prompt),
     }
@@ -185,12 +162,13 @@ def build_prompt_fingerprint(
                         spans.append(text)
     canonical = canonical_dimensions(dimensions)
     spans_tuple = tuple(spans)
-    payload = repr((sorted(canonical.items()), spans_tuple, tokens))
+    payload = repr((sorted(canonical.items()), spans_tuple, tokens, surface_text))
     return PromptFingerprint(
         dimensions=canonical,
         protected_spans=spans_tuple,
         normalized_tokens=tokens,
         fingerprint_hash=short_hash(payload, 16),
+        surface_text=surface_text,
     )
 
 
@@ -205,6 +183,11 @@ def changed_factors(
         for key in set(parent_dimensions) | set(child_dimensions)
         if parent_dimensions.get(key) != child_dimensions.get(key)
     }
-    if parent.normalized_tokens != child.normalized_tokens and not changed:
+    surface_changed = (
+        parent.surface_text != child.surface_text
+        if parent.surface_text or child.surface_text
+        else parent.normalized_tokens != child.normalized_tokens
+    )
+    if surface_changed and not changed:
         changed.add("style_surface")
     return tuple(sorted(changed))

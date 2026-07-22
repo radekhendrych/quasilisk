@@ -17,10 +17,11 @@ from .perturbation.models import (
     VariantStage,
 )
 from .perturbation.outcomes import OutcomePolicy
+from .perturbation.rejection_memory import normalized_prompt_key
 from .utils import append_jsonl, short_hash, utc_now, write_json
 
 
-SEARCH_STATS_SCHEMA_VERSION = 4
+SEARCH_STATS_SCHEMA_VERSION = 5
 OPTIMIZATION_IMPROVEMENT_TARGET = 0.5
 METRIC_DEFINITIONS = {
     "optimization_end_to_end_rate": (
@@ -35,8 +36,29 @@ METRIC_DEFINITIONS = {
     ),
     "optimization_nomination_rate": (
         "validator-nominated optimization variants / perturbator-produced "
-        "optimization variants; this is the hard upper bound on the all-output "
-        "improvement rate"
+        "optimization variants; an output-level efficiency diagnostic"
+    ),
+    "optimization_task_end_to_end_rate": (
+        "optimization mutation tasks with an improved nominee / attempted "
+        "optimization mutation tasks; this is the improvement target basis"
+    ),
+    "optimization_task_nomination_rate": (
+        "optimization mutation tasks that gained an admissible nominee / "
+        "attempted optimization mutation tasks"
+    ),
+    "perturbator_delivery_rate": (
+        "parsed perturbator outputs / requested perturbator outputs"
+    ),
+    "perturbator_absolute_valid_rate": (
+        "perturbator outputs passing objective and absolute prompt validation / "
+        "parsed perturbator outputs"
+    ),
+    "perturbator_transition_contract_valid_rate": (
+        "perturbator outputs satisfying their parent-relative mutation contract / "
+        "parsed perturbator outputs"
+    ),
+    "perturbator_unique_output_rate": (
+        "globally distinct normalized perturbator prompts / parsed perturbator outputs"
     ),
     "revision_task_success_rate": (
         "failed mutation tasks that gained an admissible nominee after the single "
@@ -316,7 +338,20 @@ class SearchStatsTracker:
                 raise ValueError("revision task outcomes do not reconcile")
         elif revision_task_ids:
             raise ValueError("unattempted revision cannot contain requested tasks")
+        output_funnel, output_evidence = _build_output_funnel(
+            produced=int(produced),
+            lifecycles=generated,
+            accepted_candidates=accepted_candidates,
+            rejected=rejected,
+            audit=audit,
+        )
         attempt["plan"] = _compact_plan(plan)
+        attempt["task_inventory"] = [
+            task.to_jsonable()
+            for task in tasks_by_id.values()
+            if not task.is_control
+        ]
+        attempt["output_evidence"] = output_evidence
         attempt["perturbator"] = {
             "produced": int(produced),
             "accepted": len(accepted),
@@ -332,6 +367,7 @@ class SearchStatsTracker:
             "retry_count": int(audit.get("retry_count", 0) or 0),
             "usage": dict(audit.get("usage") or {}),
             "error": error,
+            "output_funnel": output_funnel,
         }
         attempt["variant_lifecycles"] = [item.to_jsonable() for item in lifecycles]
         attempt["rejection_reasons"] = dict(
@@ -441,6 +477,11 @@ class SearchStatsTracker:
                     for purpose in TaskPurpose
                 },
                 "operator_outcomes": _operator_outcomes(finalized),
+                "task_outcomes": _build_task_outcomes(
+                    task_inventory=attempt.get("task_inventory") or (),
+                    variants=finalized,
+                    output_evidence=attempt.get("output_evidence") or {},
+                ),
                 "variant_lifecycles": [item.to_jsonable() for item in finalized],
                 "rejection_reasons": attempt["rejection_reasons"],
             }
@@ -519,6 +560,24 @@ class SearchStatsTracker:
             "optimization_nomination_headroom": overall[
                 "optimization_nomination_headroom"
             ],
+            "optimization_task_attempted": overall[
+                "optimization_task_attempted"
+            ],
+            "optimization_task_valid_rate": overall[
+                "optimization_task_valid_rate"
+            ],
+            "optimization_task_nomination_rate": overall[
+                "optimization_task_nomination_rate"
+            ],
+            "optimization_task_end_to_end_rate": overall[
+                "optimization_task_end_to_end_rate"
+            ],
+            "optimization_task_conditional_rate": overall[
+                "optimization_task_conditional_rate"
+            ],
+            "optimization_task_nomination_headroom": overall[
+                "optimization_task_nomination_headroom"
+            ],
             "optimization_target_feasible_from_nominations": overall[
                 "optimization_target_feasible_from_nominations"
             ],
@@ -529,6 +588,17 @@ class SearchStatsTracker:
                 "optimization_conditional_rate"
             ],
             "optimization_target_gap": overall["optimization_target_gap"],
+            "optimization_target_basis": overall["optimization_target_basis"],
+            "perturbator_delivery_rate": overall["perturbator_delivery_rate"],
+            "perturbator_absolute_valid_rate": overall[
+                "perturbator_absolute_valid_rate"
+            ],
+            "perturbator_transition_contract_valid_rate": overall[
+                "perturbator_transition_contract_valid_rate"
+            ],
+            "perturbator_unique_output_rate": overall[
+                "perturbator_unique_output_rate"
+            ],
             "discovery_success_rate": overall["discovery_success_rate"],
             "diagnostic_effect_rate": overall["diagnostic_effect_rate"],
             "control_mean_absolute_delta": overall["control_variance"][
@@ -706,6 +776,123 @@ def _attempt_outcome(
     }
 
 
+def _aggregate_output_funnel(
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    funnels = [
+        item.get("perturbator", {}).get("output_funnel") or {}
+        for item in records
+    ]
+
+    def aggregate_items(items: list[dict[str, Any]]) -> dict[str, Any]:
+        requested = sum(int(item.get("requested", 0) or 0) for item in items)
+        produced = sum(int(item.get("produced", 0) or 0) for item in items)
+        absolute_valid = sum(
+            int(item.get("absolute_valid", 0) or 0) for item in items
+        )
+        contract_valid = sum(
+            int(item.get("transition_contract_valid", 0) or 0)
+            for item in items
+        )
+        prompt_hashes = {
+            str(prompt_hash)
+            for item in items
+            for prompt_hash in item.get("prompt_hashes") or ()
+            if str(prompt_hash)
+        }
+        return {
+            "requested": requested,
+            "produced": produced,
+            "unique": len(prompt_hashes),
+            "absolute_valid": absolute_valid,
+            "transition_contract_valid": contract_valid,
+            "delivery_rate": _ratio(produced, requested),
+            "unique_rate": _ratio(len(prompt_hashes), produced),
+            "absolute_valid_rate": _ratio(absolute_valid, produced),
+            "transition_contract_valid_rate": _ratio(
+                contract_valid,
+                produced,
+            ),
+        }
+
+    overall = aggregate_items(funnels)
+    by_purpose: dict[str, dict[str, Any]] = {}
+    for purpose in TaskPurpose:
+        if purpose is TaskPurpose.CONTROL:
+            continue
+        purpose_items: list[dict[str, Any]] = []
+        for funnel in funnels:
+            item = (funnel.get("by_purpose") or {}).get(purpose.value) or {}
+            purpose_items.append(
+                {
+                    **item,
+                    "requested": 0,
+                }
+            )
+        by_purpose[purpose.value] = aggregate_items(purpose_items)
+        by_purpose[purpose.value].pop("requested", None)
+        by_purpose[purpose.value].pop("delivery_rate", None)
+    return {**overall, "by_purpose": by_purpose}
+
+
+def _aggregate_task_funnel(
+    records: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    tasks = [
+        task
+        for record in records
+        for task in record.get("task_outcomes") or ()
+        if isinstance(task, dict)
+    ]
+    result: dict[str, dict[str, Any]] = {}
+    for purpose in TaskPurpose:
+        if purpose is TaskPurpose.CONTROL:
+            continue
+        selected = [
+            item for item in tasks if item.get("purpose") == purpose.value
+        ]
+        attempted = len(selected)
+        counts = {
+            "with_output": sum(bool(item.get("with_output")) for item in selected),
+            "absolute_valid": sum(
+                bool(item.get("absolute_valid_output")) for item in selected
+            ),
+            "transition_contract_valid": sum(
+                bool(item.get("transition_contract_valid_output"))
+                for item in selected
+            ),
+            "validated": sum(bool(item.get("validated")) for item in selected),
+            "nominated": sum(bool(item.get("nominated")) for item in selected),
+            "evaluated": sum(bool(item.get("evaluated")) for item in selected),
+            "comparable": sum(bool(item.get("comparable")) for item in selected),
+            "improved": sum(bool(item.get("improved")) for item in selected),
+            "retained": sum(bool(item.get("retained")) for item in selected),
+            "regressed": sum(bool(item.get("regressed")) for item in selected),
+        }
+        result[purpose.value] = {
+            "attempted": attempted,
+            **counts,
+            "output_delivery_rate": _ratio(counts["with_output"], attempted),
+            "absolute_valid_rate": _ratio(counts["absolute_valid"], attempted),
+            "transition_contract_valid_rate": _ratio(
+                counts["transition_contract_valid"],
+                attempted,
+            ),
+            "valid_rate": _ratio(counts["validated"], attempted),
+            "nomination_rate": _ratio(counts["nominated"], attempted),
+            "evaluation_rate": _ratio(counts["evaluated"], attempted),
+            "end_to_end_improvement_rate": _ratio(
+                counts["improved"],
+                attempted,
+            ),
+            "conditional_improvement_rate": _ratio(
+                counts["improved"],
+                counts["comparable"],
+            ),
+        }
+    return result
+
+
 def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     variants = _all_lifecycles(records)
     by_purpose = {
@@ -744,6 +931,9 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     model_records = [
         item for item in records if not item["perturbator"].get("fallback_used")
     ]
+    output_funnel = _aggregate_output_funnel(model_records)
+    task_funnel = _aggregate_task_funnel(model_records)
+    optimization_tasks = task_funnel[TaskPurpose.OPTIMIZATION.value]
     deltas = [
         float(item.score_delta)
         for item in model_evaluated
@@ -770,8 +960,13 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     total_tokens = sum(
         _total_tokens(item["perturbator"].get("usage")) for item in model_records
     )
-    optimization_gap = round(
+    optimization_output_gap = round(
         optimization["end_to_end_improvement_rate"]
+        - OPTIMIZATION_IMPROVEMENT_TARGET,
+        4,
+    )
+    optimization_gap = round(
+        optimization_tasks["end_to_end_improvement_rate"]
         - OPTIMIZATION_IMPROVEMENT_TARGET,
         4,
     )
@@ -802,7 +997,10 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "attempts": len(records),
         "model_attempts": len(model_records),
         "by_purpose": by_purpose,
+        "task_funnel": task_funnel,
+        "output_funnel": output_funnel,
         "optimization_target": OPTIMIZATION_IMPROVEMENT_TARGET,
+        "optimization_target_basis": "attempted_optimization_tasks",
         "optimization_produced": optimization["produced"],
         "optimization_denominator_failures": (
             optimization[VariantOutcome.INVALID.value]
@@ -819,9 +1017,26 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             - optimization["end_to_end_improvement_rate"],
             4,
         ),
+        "optimization_task_attempted": optimization_tasks["attempted"],
+        "optimization_task_valid_rate": optimization_tasks["valid_rate"],
+        "optimization_task_nomination_rate": optimization_tasks[
+            "nomination_rate"
+        ],
+        "optimization_task_end_to_end_rate": optimization_tasks[
+            "end_to_end_improvement_rate"
+        ],
+        "optimization_task_conditional_rate": optimization_tasks[
+            "conditional_improvement_rate"
+        ],
+        "optimization_task_nomination_headroom": round(
+            optimization_tasks["nomination_rate"]
+            - optimization_tasks["end_to_end_improvement_rate"],
+            4,
+        ),
         "optimization_target_feasible_from_nominations": (
-            optimization_nomination_rate >= OPTIMIZATION_IMPROVEMENT_TARGET
-            if optimization["produced"]
+            optimization_tasks["nomination_rate"]
+            >= OPTIMIZATION_IMPROVEMENT_TARGET
+            if optimization_tasks["attempted"]
             else None
         ),
         "optimization_conditional_rate": optimization[
@@ -829,6 +1044,15 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         ],
         "optimization_target_gap": optimization_gap,
         "optimization_target_met": optimization_gap >= 0,
+        "optimization_output_target_gap": optimization_output_gap,
+        "perturbator_delivery_rate": output_funnel["delivery_rate"],
+        "perturbator_absolute_valid_rate": output_funnel[
+            "absolute_valid_rate"
+        ],
+        "perturbator_transition_contract_valid_rate": output_funnel[
+            "transition_contract_valid_rate"
+        ],
+        "perturbator_unique_output_rate": output_funnel["unique_rate"],
         "discovery_success_rate": _ratio(
             discovery_successes,
             discovery["produced"],
@@ -1118,6 +1342,229 @@ def _audited_unassigned_outputs(audit: dict[str, Any]) -> list[dict[str, Any]]:
             if isinstance(item, dict)
         )
     return records
+
+
+def _validation_acceptance(value: Any, *, default: bool = False) -> bool:
+    if not isinstance(value, dict):
+        return default
+    return bool(value.get("accepted"))
+
+
+def _prompt_evidence(
+    *,
+    prompt: Any,
+    validation: Any,
+    transition_validation: Any,
+    absolute_default: bool = False,
+) -> dict[str, Any]:
+    normalized = normalized_prompt_key(str(prompt or ""))
+    return {
+        "prompt_hash": short_hash(normalized, 16) if normalized else "",
+        "absolute_valid": _validation_acceptance(
+            validation,
+            default=absolute_default,
+        ),
+        "transition_contract_valid": _validation_acceptance(
+            transition_validation,
+        ),
+    }
+
+
+def _build_output_funnel(
+    *,
+    produced: int,
+    lifecycles: list[VariantLifecycle],
+    accepted_candidates: list[Any],
+    rejected: list[dict[str, Any]],
+    audit: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Separate transport, absolute, transition, uniqueness, and nomination loss."""
+
+    evidence: dict[str, dict[str, Any]] = {}
+    for candidate in accepted_candidates:
+        metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+        output_id = str(metadata.get("output_id") or candidate.id)
+        evidence[output_id] = _prompt_evidence(
+            prompt=candidate.prompt,
+            validation=metadata.get("validation"),
+            transition_validation=metadata.get("transition_validation"),
+            absolute_default=True,
+        )
+    for item in rejected:
+        output_id = str(item.get("output_id") or "")
+        if not output_id:
+            continue
+        evidence[output_id] = _prompt_evidence(
+            prompt=item.get("prompt"),
+            validation=item.get("validation"),
+            transition_validation=item.get("transition_validation"),
+        )
+    for item in _audited_unassigned_outputs(audit):
+        output_id = str(item.get("output_id") or "")
+        if not output_id:
+            continue
+        evidence[output_id] = _prompt_evidence(
+            prompt=item.get("prompt"),
+            validation=None,
+            transition_validation=None,
+        )
+
+    def lifecycle_evidence(item: VariantLifecycle) -> dict[str, Any]:
+        resolved = evidence.get(item.source_output_id) or evidence.get(item.variant_id)
+        if resolved is not None:
+            return resolved
+        return {
+            "prompt_hash": short_hash(
+                f"unrecorded-output:{item.source_output_id or item.variant_id}",
+                16,
+            ),
+            "absolute_valid": item.stage is not VariantStage.PRODUCED,
+            "transition_contract_valid": item.stage is not VariantStage.PRODUCED,
+        }
+
+    output_evidence = {
+        item.source_output_id or item.variant_id: lifecycle_evidence(item)
+        for item in lifecycles
+    }
+    prompt_hashes = {
+        str(item.get("prompt_hash") or "")
+        for item in output_evidence.values()
+        if item.get("prompt_hash")
+    }
+    absolute_valid = sum(
+        bool(item.get("absolute_valid")) for item in output_evidence.values()
+    )
+    contract_valid = sum(
+        bool(item.get("transition_contract_valid"))
+        for item in output_evidence.values()
+    )
+    variant_counts = audit.get("variant_counts")
+    if isinstance(variant_counts, dict):
+        requested = int(variant_counts.get("requested_initial", 0) or 0) + int(
+            variant_counts.get("requested_revision", 0) or 0
+        )
+    else:
+        requested = int(
+            (audit.get("generation_contract") or {}).get("requested", produced)
+            or 0
+        )
+    by_purpose: dict[str, dict[str, Any]] = {}
+    for purpose in TaskPurpose:
+        if purpose is TaskPurpose.CONTROL:
+            continue
+        purpose_outputs = [item for item in lifecycles if item.purpose is purpose]
+        purpose_evidence = [
+            lifecycle_evidence(item) for item in purpose_outputs
+        ]
+        purpose_hashes = {
+            str(item.get("prompt_hash") or "")
+            for item in purpose_evidence
+            if item.get("prompt_hash")
+        }
+        purpose_produced = len(purpose_outputs)
+        purpose_absolute = sum(
+            bool(item.get("absolute_valid")) for item in purpose_evidence
+        )
+        purpose_contract = sum(
+            bool(item.get("transition_contract_valid"))
+            for item in purpose_evidence
+        )
+        by_purpose[purpose.value] = {
+            "produced": purpose_produced,
+            "unique": len(purpose_hashes),
+            "absolute_valid": purpose_absolute,
+            "transition_contract_valid": purpose_contract,
+            "unique_rate": _ratio(len(purpose_hashes), purpose_produced),
+            "absolute_valid_rate": _ratio(purpose_absolute, purpose_produced),
+            "transition_contract_valid_rate": _ratio(
+                purpose_contract,
+                purpose_produced,
+            ),
+            "prompt_hashes": sorted(purpose_hashes),
+        }
+    funnel = {
+        "requested": requested,
+        "produced": produced,
+        "unique": len(prompt_hashes),
+        "absolute_valid": absolute_valid,
+        "transition_contract_valid": contract_valid,
+        "delivery_rate": _ratio(produced, requested),
+        "unique_rate": _ratio(len(prompt_hashes), produced),
+        "absolute_valid_rate": _ratio(absolute_valid, produced),
+        "transition_contract_valid_rate": _ratio(contract_valid, produced),
+        "prompt_hashes": sorted(prompt_hashes),
+        "by_purpose": by_purpose,
+    }
+    return funnel, output_evidence
+
+
+def _build_task_outcomes(
+    *,
+    task_inventory: Iterable[dict[str, Any]],
+    variants: list[VariantLifecycle],
+    output_evidence: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    outcomes: list[dict[str, Any]] = []
+    for task_data in task_inventory:
+        task = MutationTask.from_jsonable(dict(task_data))
+        if task.is_control:
+            continue
+        task_variants = [item for item in variants if item.task_id == task.task_id]
+        evidence = [
+            output_evidence.get(item.source_output_id or item.variant_id, {})
+            for item in task_variants
+        ]
+        outcomes.append(
+            {
+                "task_id": task.task_id,
+                "purpose": task.purpose.value,
+                "operator_id": task.operator_id,
+                "output_count": len(task_variants),
+                "with_output": bool(task_variants),
+                "absolute_valid_output": any(
+                    bool(item.get("absolute_valid")) for item in evidence
+                ),
+                "transition_contract_valid_output": any(
+                    bool(item.get("transition_contract_valid"))
+                    for item in evidence
+                ),
+                "validated": any(
+                    item.stage is not VariantStage.PRODUCED
+                    for item in task_variants
+                ),
+                "nominated": any(
+                    item.refinement_disposition in {"selected", "unknown"}
+                    and item.outcome is not VariantOutcome.INVALID
+                    for item in task_variants
+                ),
+                "evaluated": any(
+                    item.stage is VariantStage.EVALUATED
+                    for item in task_variants
+                ),
+                "comparable": any(
+                    item.outcome
+                    in {
+                        VariantOutcome.IMPROVED,
+                        VariantOutcome.RETAINED,
+                        VariantOutcome.REGRESSED,
+                    }
+                    for item in task_variants
+                ),
+                "improved": any(
+                    item.outcome is VariantOutcome.IMPROVED
+                    for item in task_variants
+                ),
+                "retained": any(
+                    item.outcome is VariantOutcome.RETAINED
+                    for item in task_variants
+                ),
+                "regressed": any(
+                    item.outcome is VariantOutcome.REGRESSED
+                    for item in task_variants
+                ),
+            }
+        )
+    return outcomes
 
 
 def _comparison(evaluation: dict[str, Any]) -> dict[str, Any]:

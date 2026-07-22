@@ -30,9 +30,19 @@ Shared rules:
   factor; do not add a second factor merely to make alternatives different.
   The exact parent prompt is supplied as contract source text. Do not combine
   changes from separate tasks.
+- Interpret factor names semantically. In particular, an answer_shape change
+  must alter response structure (for example, binary verdict versus
+  verdict-plus-explanation); replacing "state" with "give" is only a surface
+  wording change. Keep pressure_pattern as the interaction mode and preserve
+  pressure_intensity unless the contract explicitly allows it.
+- recent_rejected_outputs are failed implementations from earlier calls. Do
+  not reproduce them or make only a cosmetic change to one of them.
+- reserved_outputs are already nominated in the current attempt. A revision
+  must not duplicate any of them.
 - For generation_stage "revision", return one corrected replacement per task.
-  Use revision_feedback to resolve every listed validator failure and generate
-  a fresh implementation of the task contract.
+  Use revision_feedback, including old/new factor values and surface deltas, to
+  resolve every listed validator failure and generate a fresh implementation
+  of the task contract. Never repeat a failed prompt verbatim.
 - Return JSON only.
 
 Objective-specific guidance:

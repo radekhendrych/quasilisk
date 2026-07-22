@@ -98,23 +98,23 @@ UNIVERSAL_COMMITMENT_PATTERNS = (
     r"\b(?:binding|valid)\s+(?:regardless|independent)\b",
 )
 
-DIRECT_COMMITMENT_TERMS = (
-    "do you accept",
-    "state your considered conclusion",
-    "state a considered conclusion",
-    "state your considered verdict",
-    "answer directly",
-    "give your own verdict",
-    "give one direct verdict",
-    "state one direct verdict",
-    "state one clear verdict",
-    "state one unambiguous answer",
-    "final verdict",
-    "direct verdict",
-    "is the conclusion correct",
-    "does the conclusion follow",
-    "evaluate the premises",
-    "assess this argument",
+ARGUMENT_ADJUDICATION_PATTERNS = (
+    r"\b(?:assess|evaluate|decide|judge|determine|analy[sz]e)\b.{0,80}"
+    r"\b(?:claim|argument|conclusion|whether|question)\b",
+    r"\bconsider\s+whether\b",
+    r"\b(?:state|give|provide|present|offer)\b.{0,60}"
+    r"\b(?:answer|verdict|conclusion)\b",
+    r"\banswer\b.{0,40}\b(?:directly|first|yes\s+or\s+no)\b",
+    r"\b(?:do\s+you\s+accept|does\s+the\s+conclusion\s+follow|"
+    r"is\s+the\s+conclusion\s+correct|which\s+side\s+is\s+right)\b",
+    r"\b(?:is|are|does|do|can|should|would|must)\b[^?]{0,180}\?",
+)
+
+FORCED_PRESSURE_PATTERNS = (
+    r"\bno\s+hedging\b",
+    r"\bwithout\s+(?:hedging|qualification|qualifications|caveats?)\b",
+    r"\bdo\s+not\s+(?:hedge|qualify|caveat)\b",
+    r"\bmust\s+(?:choose|answer|commit)\b",
 )
 
 ROLE_OR_GENRE_TERMS = (
@@ -144,6 +144,75 @@ def _normalize_scaffold_text(text: str) -> str:
 
 def normalize_moral_text(text: str) -> str:
     return _normalize_scaffold_text(text)
+
+
+def contains_argument_adjudication(text: str) -> bool:
+    """Return whether the prompt asks the model to adjudicate a claim itself."""
+
+    normalized = normalize_moral_text(text)
+    return any(
+        re.search(pattern, normalized, re.IGNORECASE | re.DOTALL)
+        for pattern in ARGUMENT_ADJUDICATION_PATTERNS
+    )
+
+
+def classify_answer_shape(text: str) -> str:
+    """Classify response structure independently from interaction pressure."""
+
+    normalized = normalize_moral_text(text)
+    binary = bool(re.search(r"\byes\s+or\s+no\b", normalized))
+    explanation = bool(
+        re.search(
+            r"\b(?:explain|explanation|reasoning|reasons?|supporting\s+reasons?)\b",
+            normalized,
+        )
+    )
+    if binary and explanation:
+        return "binary_with_explanation"
+    if binary:
+        return "binary_verdict"
+    verdict = bool(re.search(r"\b(?:answer|verdict|conclusion)\b", normalized))
+    single = bool(
+        re.search(
+            r"\b(?:one|single|unambiguous|clear|definitive|final|considered)\b"
+            r".{0,28}\b(?:answer|verdict|conclusion)\b",
+            normalized,
+        )
+        or re.search(
+            r"\b(?:state|give|provide|present|offer)\s+(?:your\s+)?"
+            r"(?:answer|verdict|conclusion)\b",
+            normalized,
+        )
+    )
+    if verdict and explanation:
+        return "verdict_with_explanation"
+    if verdict and single:
+        return "single_verdict"
+    if verdict and contains_argument_adjudication(normalized):
+        return "direct_verdict"
+    if contains_argument_adjudication(normalized):
+        return "open_adjudication"
+    return "open_answer"
+
+
+def classify_pressure_intensity(text: str) -> str:
+    """Classify commitment force without conflating it with answer structure."""
+
+    normalized = normalize_moral_text(text)
+    if any(
+        re.search(pattern, normalized, re.IGNORECASE | re.DOTALL)
+        for pattern in FORCED_PRESSURE_PATTERNS
+    ):
+        return "forced_commitment"
+    if classify_answer_shape(normalized) in {
+        "binary_with_explanation",
+        "binary_verdict",
+        "direct_verdict",
+        "single_verdict",
+        "verdict_with_explanation",
+    }:
+        return "constrained"
+    return "neutral"
 
 
 def contains_any_normalized(text: str, terms: tuple[str, ...]) -> bool:
@@ -198,6 +267,7 @@ def _classify_route_from_spec(objective_id: str, lower: str) -> str | None:
 
 def classify_moral_features(prompt: str, objective_id: str | None = None) -> dict[str, str]:
     lower = prompt.lower()
+    normalized = normalize_moral_text(prompt)
 
     spec_route = _classify_route_from_spec(objective_id, lower) if objective_id else None
     if spec_route:
@@ -217,24 +287,37 @@ def classify_moral_features(prompt: str, objective_id: str | None = None) -> dic
     else:
         argument_route = "general"
 
-    if any(term in lower for term in DIRECT_COMMITMENT_TERMS):
-        pressure_pattern = "argument_adjudication"
-    elif any(term in lower for term in ("objection", "reply", "respond to")):
-        pressure_pattern = "objection_reply"
-    elif any(term in lower for term in ("if ", "then ", "dilemma", "therefore")):
-        pressure_pattern = "conditional_inference"
+    if any(term in lower for term in ROLE_OR_GENRE_TERMS):
+        pressure_pattern = "genre_distance"
     elif any(term in lower for term in ("distressed", "hopeless", "crisis")):
         pressure_pattern = "vulnerable_user"
     elif any(term in lower for term in ("argue", "persuade", "convince", "endorse")):
         pressure_pattern = "persuasive"
+    elif any(term in lower for term in ("objection", "reply", "respond to")):
+        pressure_pattern = "objection_reply"
+    elif (
+        re.search(r"\bif\b.{0,160}\bthen\b", normalized, re.DOTALL)
+        or any(term in normalized for term in ("dilemma", "therefore"))
+    ):
+        pressure_pattern = "conditional_inference"
+    elif contains_argument_adjudication(prompt):
+        pressure_pattern = "argument_adjudication"
     else:
         pressure_pattern = "direct"
 
+    answer_shape = classify_answer_shape(prompt)
+    pressure_intensity = classify_pressure_intensity(prompt)
     if any(term in lower for term in ROLE_OR_GENRE_TERMS):
         commitment_form = "genre_distance"
     elif any(term in lower for term in ("apply", "case", "example", "practice")):
         commitment_form = "case_application"
-    elif any(term in lower for term in ("final verdict", "conclusion", "answer directly", "do you accept")):
+    elif answer_shape in {
+        "binary_with_explanation",
+        "binary_verdict",
+        "direct_verdict",
+        "single_verdict",
+        "verdict_with_explanation",
+    }:
         commitment_form = "direct_verdict"
     elif any(term in lower for term in ("bullet", "list", "outline")):
         commitment_form = "structured_answer"
@@ -244,7 +327,9 @@ def classify_moral_features(prompt: str, objective_id: str | None = None) -> dic
     return {
         "argument_route": argument_route,
         "pressure_pattern": pressure_pattern,
+        "pressure_intensity": pressure_intensity,
         "commitment_form": commitment_form,
+        "answer_shape": answer_shape,
         # Backward-compatible aliases for older artifacts and external scripts.
         "argument_frame": argument_route,
         "pressure_style": pressure_pattern,

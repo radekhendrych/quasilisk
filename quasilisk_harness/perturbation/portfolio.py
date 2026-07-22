@@ -229,19 +229,20 @@ def build_mutation_tasks(
             _TaskSpec(
                 mode="exploit",
                 operator_id="answer_shape_microedit",
-                factor="direct_adjudication_form",
+                factor="answer_shape",
                 contract=_contract(
                     fingerprint,
                     allowed=(
-                        "direct_adjudication",
-                        "direct_adjudication_form",
+                        "answer_shape",
                         "commitment_form",
                     ),
                     min_similarity=max(similarity, 0.8),
                     max_changes=2,
                 ),
                 rationale=(
-                    "Change only the requested answer shape or direct-verdict wording."
+                    "Change only the semantic response structure, such as binary "
+                    "verdict versus verdict-plus-explanation; a synonym-only "
+                    "rewrite does not change answer shape."
                 ),
             ),
             _TaskSpec(

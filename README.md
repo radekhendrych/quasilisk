@@ -76,7 +76,7 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
 - `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
 - `parent_plan_outcomes.jsonl`: per-generation parent-plan outcome records used by outcome memory; this does not duplicate target responses from `events.jsonl`.
 - `operator_outcomes.jsonl`: quality-aware outcomes for individual mutation operators and factors, including persistent run-local blocking decisions.
-- `search_stats.jsonl`: append-only schema-v4 records for every produced variant,
+- `search_stats.jsonl`: append-only schema-v5 records for every produced variant,
   including task purpose, lifecycle stage, terminal outcome, validation,
   pre-target refinement disposition, budget, score comparison, and final
   archive retention.
@@ -92,15 +92,17 @@ generation traces, perturbations, candidate metadata, and child evaluations.
 Archive effectiveness is credited from the final archive state after each
 generation, so parallel evaluation order and transient insertions do not inflate
 retention, new-cell, or cell-improvement rates.
-The optimization headline is `optimization_end_to_end_rate`: improved
-optimization variants divided by every perturbator-produced optimization
-variant. Invalid, duplicate, truncated, errored, and unscored outputs therefore
-remain denominator failures. `optimization_valid_rate` isolates validation
-yield, `optimization_nomination_rate` shows how many raw optimization proposals
-survive pre-target ranking, and `optimization_conditional_rate` reports
-improvement only among comparable evaluations. No proposal can improve without
-nomination, so nomination rate is the measured upper
-bound on `optimization_end_to_end_rate`; the summary reports whether that bound
+The 50% optimization target uses `optimization_task_end_to_end_rate`: attempted
+optimization mutation tasks whose nominated child improved on its parent. This
+keeps oversampling from mechanically depressing the goal. Raw-output efficiency
+remains visible in `optimization_end_to_end_rate`, `optimization_valid_rate`,
+and `optimization_nomination_rate`. The task funnel separately reports delivery,
+absolute validity, transition-contract validity, nomination, evaluation, and
+improvement. The raw perturbator funnel reports requested versus parsed output,
+global uniqueness, absolute validity, and parent-relative contract validity, so
+transport or formatting loss is not conflated with an overly strict transition
+validator. `optimization_task_nomination_rate` is the measured upper bound on
+the task-level improvement target, and the summary reports whether that bound
 still makes the 50% target feasible. A valid oversampled alternative
 that loses ranking remains a visible `truncated` lifecycle with
 `refinement_disposition: ranked_out`; it is not mislabeled invalid or budget

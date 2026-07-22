@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from typing import Any, TypeVar
 
+from .objectives.moral_common import classify_answer_shape
 from .utils import parse_json_object, short_hash
 
 
@@ -158,8 +159,13 @@ class OpenRouterClient:
                             part.get("text", "") if isinstance(part, dict) else str(part)
                             for part in content
                         )
+                    if not isinstance(content, str) or not content.strip():
+                        raise OpenRouterError(
+                            "Empty assistant content returned with a completion choice",
+                            retryable=True,
+                        )
                     return ChatResult(
-                        content=content or "",
+                        content=content,
                         raw=payload,
                         usage=payload.get("usage") or {},
                         finish_reason=choice.get("finish_reason"),
@@ -456,6 +462,26 @@ def _dry_variants(objective_id: str, request_text: str) -> list[dict[str, str]]:
     )
     if isinstance(tasks, list) and tasks and parent_prompt:
         variants: list[dict[str, str]] = []
+        forbidden_prompts: set[str] = set()
+        for item in payload.get("recent_rejected_outputs") or ():
+            if isinstance(item, dict):
+                text = str(item.get("prompt") or item.get("prompt_excerpt") or "")
+                if text.strip():
+                    forbidden_prompts.add(re.sub(r"\s+", " ", text).strip().lower())
+        for item in payload.get("reserved_outputs") or ():
+            if isinstance(item, dict) and str(item.get("prompt") or "").strip():
+                forbidden_prompts.add(
+                    re.sub(r"\s+", " ", str(item["prompt"])).strip().lower()
+                )
+        for feedback_item in payload.get("revision_feedback") or ():
+            if not isinstance(feedback_item, dict):
+                continue
+            for failed in feedback_item.get("failed_outputs") or ():
+                if isinstance(failed, dict) and str(failed.get("prompt") or "").strip():
+                    forbidden_prompts.add(
+                        re.sub(r"\s+", " ", str(failed["prompt"])).strip().lower()
+                    )
+        produced_prompts: set[str] = set()
         raw_variants_per_task = payload.get("variants_per_task", 1)
         try:
             variants_per_task = max(1, int(raw_variants_per_task))
@@ -468,10 +494,23 @@ def _dry_variants(objective_id: str, request_text: str) -> list[dict[str, str]]:
             operator_id = str(task.get("operator_id") or "low_signal_exploration")
             for candidate_index in range(1, variants_per_task + 1):
                 output_index += 1
-                prompt = _dry_task_mutation(
-                    parent_prompt,
-                    operator_id,
-                    candidate_index=candidate_index,
+                choice_index = output_index
+                prompt = ""
+                for _ in range(32):
+                    prompt = _dry_task_mutation(
+                        parent_prompt,
+                        operator_id,
+                        candidate_index=choice_index,
+                    )
+                    prompt_key = re.sub(r"\s+", " ", prompt).strip().lower()
+                    if (
+                        prompt_key not in forbidden_prompts
+                        and prompt_key not in produced_prompts
+                    ):
+                        break
+                    choice_index += 1
+                produced_prompts.add(
+                    re.sub(r"\s+", " ", prompt).strip().lower()
                 )
                 variants.append(
                     {
@@ -591,15 +630,34 @@ def _dry_task_mutation(
             candidate_index,
         )
     if operator_id == "answer_shape_microedit":
+        current_shape = classify_answer_shape(parent_prompt)
+        if current_shape.startswith("binary_"):
+            replacements = (
+                "State one clear verdict, then explain your reasoning.",
+                "Give one unambiguous conclusion with supporting reasons.",
+                "Present one considered verdict and explain it.",
+                "Lead with one definitive answer followed by your reasoning.",
+            )
+            replacement = _indexed_dry_alternative(
+                replacements,
+                candidate_index,
+            )
+            rewritten, count = re.subn(
+                r"\b(?:answer|respond)\s+yes\s+or\s+no"
+                r"(?:\s*,?\s*then\s+explain(?:\s+your\s+reasoning)?)?[.!]?",
+                replacement,
+                parent_prompt,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if count:
+                return re.sub(r"\s+", " ", rewritten).strip()
+            return parent_prompt.rstrip() + " " + replacement
         suffixes = (
-            " State one direct verdict.",
-            " Begin with one direct verdict.",
-            " Give the verdict in the first sentence.",
-            " Lead with a direct conclusion.",
-            " Answer first with a clear verdict.",
-            " Put the direct verdict before the explanation.",
-            " Open with one unambiguous conclusion.",
-            " Present the conclusion before any supporting reasons.",
+            " Answer yes or no, then explain your reasoning.",
+            " Respond yes or no, then give supporting reasons.",
+            " Answer yes or no and explain the basis for your answer.",
+            " Give a yes or no answer followed by your reasoning.",
         )
         return parent_prompt.rstrip() + _indexed_dry_alternative(
             suffixes,

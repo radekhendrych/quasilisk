@@ -39,6 +39,10 @@ from .perturbation.refinement import (
     revision_feedback,
     select_refined_assessments,
 )
+from .perturbation.rejection_memory import (
+    RejectedPromptMemory,
+    normalized_prompt_key,
+)
 from .perturbation.scheduler import (
     SchedulingPolicy,
     schedule_candidates,
@@ -910,6 +914,8 @@ def build_planned_perturbation_request(
     variants_per_task: int = 1,
     generation_stage: str = "initial",
     revision_feedback_items: list[dict[str, Any]] | None = None,
+    recent_rejected_outputs: list[dict[str, Any]] | None = None,
+    reserved_outputs: list[dict[str, Any]] | None = None,
     template_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     manifest = objective.MANIFEST
@@ -1005,6 +1011,14 @@ def build_planned_perturbation_request(
             objective_id,
             revision_feedback_items or [],
         ),
+        "recent_rejected_outputs": _sanitize_for_perturbator_context(
+            objective_id,
+            recent_rejected_outputs or [],
+        ),
+        "reserved_outputs": _sanitize_for_perturbator_context(
+            objective_id,
+            reserved_outputs or [],
+        ),
         "produce": requested_count,
         "required_json": {
             "variants": [
@@ -1051,6 +1065,8 @@ def build_planned_perturbation_request(
         "generation_stage": generation_stage,
         "requested_variant_count": requested_count,
         "variants_per_task": variants_per_task if task_backed_request else None,
+        "recent_rejected_output_count": len(recent_rejected_outputs or ()),
+        "reserved_output_count": len(reserved_outputs or ()),
     }
 
 
@@ -1206,6 +1222,7 @@ def query_planned_perturbator(
     perturbation_config: dict[str, Any] | None = None,
     generation: int = 0,
     attempt_id: str = "",
+    rejected_output_context: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
     archive_context = sorted(
         archive.elites(), key=lambda item: item["score"]["total"], reverse=True
@@ -1283,6 +1300,7 @@ def query_planned_perturbator(
         mutation_tasks=model_tasks,
         parent_fingerprint=parent_fingerprint.to_jsonable(),
         variants_per_task=resolved_refinement_policy.variants_per_task,
+        recent_rejected_outputs=rejected_output_context,
         template_config=template_config,
     )
     audit: dict[str, Any] = {
@@ -1298,6 +1316,7 @@ def query_planned_perturbator(
         "defense_profile": defense_json,
         "perturbation_attempt_id": attempt_id,
         "refinement_policy": resolved_refinement_policy.to_jsonable(),
+        "recent_rejected_outputs": list(rejected_output_context or ()),
         "outcome_memory": (
             outcome_memory.to_jsonable(generation=generation)
             if outcome_memory is not None
@@ -1431,6 +1450,8 @@ def query_perturbator_revision(
     perturbator_max_tokens: int | None,
     template_config: dict[str, Any] | None = None,
     attempt_id: str = "",
+    recent_rejected_outputs: list[dict[str, Any]] | None = None,
+    reserved_outputs: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any]]:
     """Request one bounded validator-guided replacement per failed task."""
 
@@ -1479,6 +1500,8 @@ def query_perturbator_revision(
         variants_per_task=1,
         generation_stage="revision",
         revision_feedback_items=feedback,
+        recent_rejected_outputs=recent_rejected_outputs,
+        reserved_outputs=reserved_outputs,
         template_config=template_config,
     )
     audit: dict[str, Any] = {
@@ -1487,6 +1510,8 @@ def query_perturbator_revision(
         "perturbation_plan": attempt_plan.to_jsonable(),
         "task_ids": [task.task_id for task in tasks],
         "feedback": feedback,
+        "recent_rejected_outputs": list(recent_rejected_outputs or ()),
+        "reserved_outputs": list(reserved_outputs or ()),
         "raw_response": None,
         "finish_reason": None,
         "usage": {},
@@ -1638,6 +1663,8 @@ def _enrich_task_variants(
                     "requested_task_id": requested_task_id,
                     "generation_stage": generation_stage,
                     "variant_source": variant_source,
+                    "prompt": str(variant.get("prompt") or ""),
+                    "mutation": str(variant.get("mutation") or ""),
                     "reason": "overproduction_limit",
                 }
             )
@@ -1657,6 +1684,9 @@ def _enrich_task_variants(
                         "requested_task_id": requested_task_id,
                         "generation_stage": generation_stage,
                         "variant_source": variant_source,
+                        "prompt": str(variant.get("prompt") or ""),
+                        "mutation": str(variant.get("mutation") or ""),
+                        "operator_id": task.operator_id,
                         "reason": "task_overproduction_limit",
                     }
                 )
@@ -1681,6 +1711,8 @@ def _enrich_task_variants(
                         "requested_task_id": requested_task_id,
                         "generation_stage": generation_stage,
                         "variant_source": variant_source,
+                        "prompt": str(variant.get("prompt") or ""),
+                        "mutation": str(variant.get("mutation") or ""),
                         "reason": "assignment_capacity_exhausted",
                     }
                 )
@@ -1710,6 +1742,8 @@ def _enrich_task_variants(
                     "requested_task_id": requested_task_id,
                     "generation_stage": generation_stage,
                     "variant_source": variant_source,
+                    "prompt": str(variant.get("prompt") or ""),
+                    "mutation": str(variant.get("mutation") or ""),
                     "reason": "no_generation_task",
                 }
             )
@@ -1816,6 +1850,7 @@ def prepare_refined_candidates(
     generation: int,
     seen_prompts: set[str],
     tasks: list[MutationTask],
+    rejected_prompts: set[str] | None = None,
 ) -> CandidateRefinementResult:
     """Rank validated alternatives and materialize all audited lifecycles."""
 
@@ -1826,6 +1861,7 @@ def prepare_refined_candidates(
         assessments,
         tasks=tasks,
         seen_prompts=seen_prompts,
+        rejected_prompts=rejected_prompts,
     )
     disposition_by_output_id = {
         item.assessment.output_id: item for item in decision.dispositions
@@ -2002,6 +2038,7 @@ def refine_perturbator_attempt(
     perturbator_audit: dict[str, Any],
     refinement_policy: RefinementPolicy,
     seen_prompts: set[str],
+    rejected_prompts: set[str] | None = None,
     archive: MapElitesArchive,
     affordances: TargetAffordanceTracker,
     perturbator_temperature: float,
@@ -2024,11 +2061,21 @@ def refine_perturbator_attempt(
         initial_assessments,
         tasks=selected_tasks,
         seen_prompts=seen_prompts,
+        rejected_prompts=rejected_prompts,
     )
     feedback = revision_feedback(
         initial_decision,
         tasks=selected_tasks,
     )
+    reserved_outputs = [
+        {
+            "task_id": assessment.task_id,
+            "prompt_hash": short_hash(assessment.prompt, 16),
+            "prompt": assessment.prompt,
+        }
+        for assessment in initial_decision.selected
+        if assessment.task is None or not assessment.task.is_control
+    ]
     revision_task_ids = set(initial_decision.missing_task_ids)
     revision_tasks = [
         task for task in selected_tasks if task.task_id in revision_task_ids
@@ -2073,6 +2120,10 @@ def refine_perturbator_attempt(
                 perturbator_max_tokens=perturbator_max_tokens,
                 template_config=template_config,
                 attempt_id=attempt_id,
+                recent_rejected_outputs=list(
+                    perturbator_audit.get("recent_rejected_outputs") or ()
+                ),
+                reserved_outputs=reserved_outputs,
             )
         )
         merge_revision_audit(perturbator_audit, revision_audit)
@@ -2088,6 +2139,7 @@ def refine_perturbator_attempt(
         generation=generation,
         seen_prompts=seen_prompts,
         tasks=selected_tasks,
+        rejected_prompts=rejected_prompts,
     )
     model_assessment_count = sum(
         assessment.task is not None and not assessment.task.is_control
@@ -2836,6 +2888,7 @@ def run_for_target(
     refinement_policy = RefinementPolicy.from_config(
         config.get("perturbation_refinement")
     )
+    rejection_memory = RejectedPromptMemory()
     archive = MapElitesArchive(config["archive_per_cell"], feature_keys)
     target_run_instance_id = short_hash(
         f"{objective.OBJECTIVE_ID}|{target_model}|{utc_now()}",
@@ -2887,6 +2940,7 @@ def run_for_target(
         "judge_retry_count": 0,
         "judge_parse_retry_count": 0,
         "perturbator_retry_count": 0,
+        "rejected_prompt_memory_size": 0,
         "parent_plan_memory_enabled": bool(outcome_memory),
         "parent_plan_memory_mode": config.get("parent_plan_memory_mode", "block"),
         "parent_plan_memory_active": 0,
@@ -2902,10 +2956,21 @@ def run_for_target(
         "optimization_valid_rate": 0.0,
         "optimization_nomination_rate": 0.0,
         "optimization_nomination_headroom": 0.0,
+        "optimization_task_attempted": 0,
+        "optimization_task_valid_rate": 0.0,
+        "optimization_task_nomination_rate": 0.0,
+        "optimization_task_end_to_end_rate": 0.0,
+        "optimization_task_conditional_rate": 0.0,
+        "optimization_task_nomination_headroom": 0.0,
         "optimization_target_feasible_from_nominations": None,
         "revision_task_success_rate": 0.0,
         "optimization_conditional_rate": 0.0,
         "optimization_target_gap": -0.5,
+        "optimization_target_basis": "attempted_optimization_tasks",
+        "perturbator_delivery_rate": 0.0,
+        "perturbator_absolute_valid_rate": 0.0,
+        "perturbator_transition_contract_valid_rate": 0.0,
+        "perturbator_unique_output_rate": 0.0,
         "discovery_success_rate": 0.0,
         "diagnostic_effect_rate": 0.0,
         "control_mean_absolute_delta": None,
@@ -2916,7 +2981,7 @@ def run_for_target(
 
     seed_candidates = [make_seed_candidate(seed) for seed in seeds]
     for candidate in seed_candidates:
-        seen_prompts.add(candidate.prompt.lower())
+        seen_prompts.add(normalized_prompt_key(candidate.prompt))
     state["seed_candidate_count"] = len(seed_candidates)
     if config["max_evaluations"] and len(seed_candidates) > config["max_evaluations"]:
         state["seed_candidates_truncated"] = len(seed_candidates) - config["max_evaluations"]
@@ -3025,6 +3090,7 @@ def run_for_target(
                 perturbation_config=config,
                 generation=generation,
                 attempt_id=attempt_id,
+                rejected_output_context=rejection_memory.to_prompt_context(),
             )
             refinement = refine_perturbator_attempt(
                 client=client,
@@ -3038,6 +3104,7 @@ def run_for_target(
                 perturbator_audit=perturbator_audit,
                 refinement_policy=refinement_policy,
                 seen_prompts=seen_prompts,
+                rejected_prompts=rejection_memory.prompt_keys(),
                 archive=archive,
                 affordances=affordances,
                 perturbator_temperature=config["perturbator_temperature"],
@@ -3048,6 +3115,21 @@ def run_for_target(
             candidates = list(refinement.selected_candidates)
             validated_candidates = list(refinement.validated_candidates)
             rejected = list(refinement.rejected)
+            rejection_memory.record(rejected, generation=generation)
+            assignment_audits = [
+                perturbator_audit.get("variant_assignment") or {},
+                *[
+                    call.get("variant_assignment") or {}
+                    for call in perturbator_audit.get("revision_calls") or ()
+                    if isinstance(call, dict)
+                ],
+            ]
+            for assignment_audit in assignment_audits:
+                rejection_memory.record(
+                    assignment_audit.get("unassigned") or (),
+                    generation=generation,
+                )
+            state["rejected_prompt_memory_size"] = len(rejection_memory)
             error = perturbator_audit.get("error")
             refinement_accounting = (
                 perturbator_audit.get("refinement", {}).get("accounting", {})
@@ -3498,10 +3580,19 @@ def write_summary(
             lines.append(f"- {name}: `{value}`")
         search_metrics = summary.get("search_metrics") or {}
         for name in (
+            "optimization_task_end_to_end_rate",
+            "optimization_task_valid_rate",
+            "optimization_task_nomination_rate",
+            "optimization_task_conditional_rate",
             "optimization_end_to_end_rate",
             "optimization_valid_rate",
+            "optimization_nomination_rate",
             "optimization_conditional_rate",
             "optimization_target_gap",
+            "perturbator_delivery_rate",
+            "perturbator_absolute_valid_rate",
+            "perturbator_transition_contract_valid_rate",
+            "perturbator_unique_output_rate",
             "discovery_success_rate",
             "diagnostic_effect_rate",
             "archive_yield",
