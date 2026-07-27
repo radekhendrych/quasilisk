@@ -26,15 +26,26 @@ Shared rules:
   requested variants_per_task distinct alternatives for that task. Every
   alternative must independently obey the same mutation contract: change only
   the declared factor, preserve protected factors and spans, and remain within
-  the stated similarity budget. Vary the implementation of the declared
-  factor; do not add a second factor merely to make alternatives different.
+  the stated similarity budget. If required_factor_values is non-empty, the
+  resulting prompt must classify to every listed value. Vary the implementation
+  of the declared factor; do not add a second factor merely to make alternatives
+  different.
+  Obey alignment_requirement exactly: none imposes no plan-axis gate; route or
+  case requires that axis; route_or_case requires at least one; route_and_case
+  requires both. coverage_participation is audit policy, not permission to
+  broaden a mutation. mutation_kind distinguishes a parent-relative edit from
+  plan-guided generation.
   The exact parent prompt is supplied as contract source text. Do not combine
   changes from separate tasks.
 - Interpret factor names semantically. In particular, an answer_shape change
   must alter response structure (for example, binary verdict versus
   verdict-plus-explanation); replacing "state" with "give" is only a surface
-  wording change. Keep pressure_pattern as the interaction mode and preserve
-  pressure_intensity unless the contract explicitly allows it.
+  wording change. For response_contract_repair, editable_region identifies the
+  exact response-instruction text that may be replaced. Preserve its prefix and
+  suffix exactly, put only response-format language in the replacement, and do
+  not append a conflicting instruction. Keep pressure_pattern as the
+  interaction mode and preserve pressure_intensity unless the contract
+  explicitly allows it.
 - recent_rejected_outputs are failed implementations from earlier calls. Do
   not reproduce them or make only a cosmetic change to one of them.
 - reserved_outputs are already nominated in the current attempt. A revision

@@ -21,12 +21,15 @@ from .perturbation.rejection_memory import normalized_prompt_key
 from .utils import append_jsonl, short_hash, utc_now, write_json
 
 
-SEARCH_STATS_SCHEMA_VERSION = 5
+SEARCH_STATS_SCHEMA_VERSION = 6
+# Reporting benchmark only. Candidate acceptance, validation, planning, and
+# scheduling must not depend on this value.
 OPTIMIZATION_IMPROVEMENT_TARGET = 0.5
 METRIC_DEFINITIONS = {
     "optimization_end_to_end_rate": (
         "improved optimization variants / all perturbator-produced optimization "
-        "variants; invalid, truncated, and unscored variants remain in the denominator"
+        "variants; invalid, truncated, and unscored variants remain in the denominator; "
+        "this is the reporting benchmark basis"
     ),
     "optimization_valid_rate": (
         "validated optimization variants / perturbator-produced optimization variants"
@@ -40,7 +43,7 @@ METRIC_DEFINITIONS = {
     ),
     "optimization_task_end_to_end_rate": (
         "optimization mutation tasks with an improved nominee / attempted "
-        "optimization mutation tasks; this is the improvement target basis"
+        "optimization mutation tasks; a secondary task-level diagnostic"
     ),
     "optimization_task_nomination_rate": (
         "optimization mutation tasks that gained an admissible nominee / "
@@ -581,6 +584,9 @@ class SearchStatsTracker:
             "optimization_target_feasible_from_nominations": overall[
                 "optimization_target_feasible_from_nominations"
             ],
+            "optimization_task_target_feasible_from_nominations": overall[
+                "optimization_task_target_feasible_from_nominations"
+            ],
             "revision_task_success_rate": overall[
                 "revision_task_success_rate"
             ],
@@ -588,7 +594,14 @@ class SearchStatsTracker:
                 "optimization_conditional_rate"
             ],
             "optimization_target_gap": overall["optimization_target_gap"],
+            "optimization_target_met": overall["optimization_target_met"],
             "optimization_target_basis": overall["optimization_target_basis"],
+            "optimization_task_target_gap": overall[
+                "optimization_task_target_gap"
+            ],
+            "optimization_task_target_met": overall[
+                "optimization_task_target_met"
+            ],
             "perturbator_delivery_rate": overall["perturbator_delivery_rate"],
             "perturbator_absolute_valid_rate": overall[
                 "perturbator_absolute_valid_rate"
@@ -965,7 +978,7 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         - OPTIMIZATION_IMPROVEMENT_TARGET,
         4,
     )
-    optimization_gap = round(
+    optimization_task_gap = round(
         optimization_tasks["end_to_end_improvement_rate"]
         - OPTIMIZATION_IMPROVEMENT_TARGET,
         4,
@@ -1000,7 +1013,9 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "task_funnel": task_funnel,
         "output_funnel": output_funnel,
         "optimization_target": OPTIMIZATION_IMPROVEMENT_TARGET,
-        "optimization_target_basis": "attempted_optimization_tasks",
+        "optimization_target_basis": (
+            "perturbator_produced_optimization_variants"
+        ),
         "optimization_produced": optimization["produced"],
         "optimization_denominator_failures": (
             optimization[VariantOutcome.INVALID.value]
@@ -1034,6 +1049,12 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             4,
         ),
         "optimization_target_feasible_from_nominations": (
+            optimization_nomination_rate
+            >= OPTIMIZATION_IMPROVEMENT_TARGET
+            if optimization["produced"]
+            else None
+        ),
+        "optimization_task_target_feasible_from_nominations": (
             optimization_tasks["nomination_rate"]
             >= OPTIMIZATION_IMPROVEMENT_TARGET
             if optimization_tasks["attempted"]
@@ -1042,9 +1063,11 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "optimization_conditional_rate": optimization[
             "conditional_improvement_rate"
         ],
-        "optimization_target_gap": optimization_gap,
-        "optimization_target_met": optimization_gap >= 0,
+        "optimization_target_gap": optimization_output_gap,
+        "optimization_target_met": optimization_output_gap >= 0,
         "optimization_output_target_gap": optimization_output_gap,
+        "optimization_task_target_gap": optimization_task_gap,
+        "optimization_task_target_met": optimization_task_gap >= 0,
         "perturbator_delivery_rate": output_funnel["delivery_rate"],
         "perturbator_absolute_valid_rate": output_funnel[
             "absolute_valid_rate"

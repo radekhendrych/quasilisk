@@ -180,7 +180,7 @@ class RefinementPolicyTests(unittest.TestCase):
         second = merge_config({}, parser.parse_args([]))
         self.assertEqual(
             second["perturbation_refinement"]["variants_per_task"],
-            2,
+            1,
         )
 
 
@@ -518,10 +518,11 @@ class RefinementLifecycleTests(unittest.TestCase):
             self.assertEqual(overall["optimization_task_attempted"], 1)
             self.assertEqual(overall["optimization_task_nomination_rate"], 1.0)
             self.assertEqual(overall["optimization_task_end_to_end_rate"], 1.0)
-            self.assertEqual(overall["optimization_target_gap"], 0.5)
+            self.assertEqual(overall["optimization_target_gap"], 0.0)
+            self.assertEqual(overall["optimization_task_target_gap"], 0.5)
             self.assertEqual(
                 overall["optimization_target_basis"],
-                "attempted_optimization_tasks",
+                "perturbator_produced_optimization_variants",
             )
             self.assertEqual(overall["perturbator_delivery_rate"], 1.0)
             self.assertEqual(overall["perturbator_absolute_valid_rate"], 1.0)

@@ -44,6 +44,67 @@ class VariantSource(str, enum.Enum):
     HARNESS = "harness"
 
 
+class PlanAlignmentRequirement(str, enum.Enum):
+    """Which selected plan axes a generated prompt must visibly realize."""
+
+    NONE = "none"
+    ROUTE = "route"
+    CASE = "case"
+    ROUTE_OR_CASE = "route_or_case"
+    ROUTE_AND_CASE = "route_and_case"
+
+    def satisfied_by(self, *, route_aligned: bool, case_aligned: bool) -> bool:
+        if self is PlanAlignmentRequirement.NONE:
+            return True
+        if self is PlanAlignmentRequirement.ROUTE:
+            return route_aligned
+        if self is PlanAlignmentRequirement.CASE:
+            return case_aligned
+        if self is PlanAlignmentRequirement.ROUTE_OR_CASE:
+            return route_aligned or case_aligned
+        return route_aligned and case_aligned
+
+
+class CoverageParticipation(str, enum.Enum):
+    """Whether a task reserves and/or contributes evidence to coverage memory."""
+
+    NONE = "none"
+    RESERVE = "reserve"
+    LEARN = "learn"
+    RESERVE_AND_LEARN = "reserve_and_learn"
+
+    @property
+    def reserves(self) -> bool:
+        return self in {
+            CoverageParticipation.RESERVE,
+            CoverageParticipation.RESERVE_AND_LEARN,
+        }
+
+    @property
+    def learns(self) -> bool:
+        return self in {
+            CoverageParticipation.LEARN,
+            CoverageParticipation.RESERVE_AND_LEARN,
+        }
+
+
+class MutationKind(str, enum.Enum):
+    """Whether a task edits its parent or generates a plan-guided alternative."""
+
+    PARENT_RELATIVE = "parent_relative"
+    PLAN_GUIDED_GENERATION = "plan_guided_generation"
+
+    @property
+    def parent_relative(self) -> bool:
+        return self is MutationKind.PARENT_RELATIVE
+
+
+class EditableRegionKind(str, enum.Enum):
+    """Semantic type of an exactly bounded editable prompt region."""
+
+    RESPONSE_INSTRUCTION = "response_instruction"
+
+
 @dataclasses.dataclass(frozen=True)
 class DefenseProfile:
     primary: str
@@ -131,6 +192,49 @@ class PromptFingerprint:
 
 
 @dataclasses.dataclass(frozen=True)
+class EditableRegion:
+    """An exact parent span whose replacement is authorized by a contract."""
+
+    kind: EditableRegionKind
+    prefix: str
+    original_text: str
+    suffix: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, EditableRegionKind):
+            raise TypeError("EditableRegion kind must be an EditableRegionKind")
+        if not self.original_text:
+            raise ValueError("EditableRegion original_text must not be empty")
+
+    @property
+    def parent_text(self) -> str:
+        return f"{self.prefix}{self.original_text}{self.suffix}"
+
+    def to_jsonable(self) -> dict[str, str]:
+        return {
+            "kind": self.kind.value,
+            "prefix": self.prefix,
+            "original_text": self.original_text,
+            "suffix": self.suffix,
+        }
+
+    @classmethod
+    def from_jsonable(cls, data: dict[str, Any]) -> "EditableRegion":
+        try:
+            kind = EditableRegionKind(str(data.get("kind") or ""))
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown editable region kind: {data.get('kind')!r}"
+            ) from exc
+        return cls(
+            kind=kind,
+            prefix=str(data.get("prefix") or ""),
+            original_text=str(data.get("original_text") or ""),
+            suffix=str(data.get("suffix") or ""),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class MutationContract:
     allowed_factors: tuple[str, ...]
     protected_factors: tuple[str, ...]
@@ -138,6 +242,19 @@ class MutationContract:
     max_factor_changes: int = 1
     min_token_similarity: float = 0.8
     archive_eligible: bool = True
+    required_factor_values: dict[str, Any] = dataclasses.field(default_factory=dict)
+    editable_region: EditableRegion | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_factor_changes < 0:
+            raise ValueError("max_factor_changes must be >= 0")
+        if not 0 <= self.min_token_similarity <= 1:
+            raise ValueError("min_token_similarity must be between 0 and 1")
+        if self.editable_region is not None and not isinstance(
+            self.editable_region,
+            EditableRegion,
+        ):
+            raise TypeError("editable_region must be an EditableRegion or None")
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -147,6 +264,12 @@ class MutationContract:
             "max_factor_changes": self.max_factor_changes,
             "min_token_similarity": self.min_token_similarity,
             "archive_eligible": self.archive_eligible,
+            "required_factor_values": dict(self.required_factor_values),
+            "editable_region": (
+                self.editable_region.to_jsonable()
+                if self.editable_region is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -163,6 +286,17 @@ class MutationContract:
             ),
             min_token_similarity=float(data.get("min_token_similarity", 0.8) or 0),
             archive_eligible=bool(data.get("archive_eligible", True)),
+            required_factor_values={
+                str(key): value
+                for key, value in (
+                    data.get("required_factor_values") or {}
+                ).items()
+            },
+            editable_region=(
+                EditableRegion.from_jsonable(dict(data["editable_region"]))
+                if isinstance(data.get("editable_region"), dict)
+                else None
+            ),
         )
 
 
@@ -177,16 +311,95 @@ class MutationTask:
     rationale: str
     plan: PerturbationPlan
     purpose: TaskPurpose = TaskPurpose.OPTIMIZATION
-    parent_relative: bool = True
     clean_ablation_candidate: bool = True
+    mutation_kind: MutationKind = MutationKind.PARENT_RELATIVE
+    alignment_requirement: PlanAlignmentRequirement = (
+        PlanAlignmentRequirement.NONE
+    )
+    coverage_participation: CoverageParticipation = CoverageParticipation.NONE
 
     def __post_init__(self) -> None:
         if not isinstance(self.purpose, TaskPurpose):
             raise TypeError("MutationTask purpose must be a TaskPurpose")
+        if not isinstance(self.mutation_kind, MutationKind):
+            raise TypeError("MutationTask mutation_kind must be a MutationKind")
+        if not isinstance(
+            self.alignment_requirement,
+            PlanAlignmentRequirement,
+        ):
+            raise TypeError(
+                "MutationTask alignment_requirement must be a "
+                "PlanAlignmentRequirement"
+            )
+        if not isinstance(
+            self.coverage_participation,
+            CoverageParticipation,
+        ):
+            raise TypeError(
+                "MutationTask coverage_participation must be a "
+                "CoverageParticipation"
+            )
+        if (
+            self.clean_ablation_candidate
+            and self.mutation_kind is not MutationKind.PARENT_RELATIVE
+        ):
+            raise ValueError(
+                "clean ablation tasks must use parent-relative mutation"
+            )
+        if self.coverage_participation is not CoverageParticipation.NONE:
+            if self.purpose is not TaskPurpose.DISCOVERY:
+                raise ValueError(
+                    "coverage participation is only valid for discovery tasks"
+                )
+            if self.mutation_kind is not MutationKind.PLAN_GUIDED_GENERATION:
+                raise ValueError(
+                    "coverage participation requires plan-guided generation"
+                )
+            if (
+                self.alignment_requirement
+                is not PlanAlignmentRequirement.ROUTE_AND_CASE
+            ):
+                raise ValueError(
+                    "coverage participation requires route-and-case alignment"
+                )
+        if (
+            self.alignment_requirement
+            in {
+                PlanAlignmentRequirement.ROUTE,
+                PlanAlignmentRequirement.ROUTE_OR_CASE,
+                PlanAlignmentRequirement.ROUTE_AND_CASE,
+            }
+            and not self.plan.route.strip()
+        ):
+            raise ValueError("route alignment requires a non-empty plan route")
+        if (
+            self.alignment_requirement
+            in {
+                PlanAlignmentRequirement.CASE,
+                PlanAlignmentRequirement.ROUTE_OR_CASE,
+                PlanAlignmentRequirement.ROUTE_AND_CASE,
+            }
+            and not self.plan.case_family.strip()
+        ):
+            raise ValueError(
+                "case alignment requires a non-empty plan case family"
+            )
 
     @property
     def is_control(self) -> bool:
         return self.purpose is TaskPurpose.CONTROL
+
+    @property
+    def parent_relative(self) -> bool:
+        """Compatibility view; mutation_kind is the canonical policy."""
+
+        return self.mutation_kind.parent_relative
+
+    @property
+    def requires_plan_alignment(self) -> bool:
+        """Compatibility view for historical artifact consumers."""
+
+        return self.alignment_requirement is not PlanAlignmentRequirement.NONE
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -199,8 +412,14 @@ class MutationTask:
             "rationale": self.rationale,
             "plan": self.plan.to_jsonable(),
             "purpose": self.purpose.value,
+            "mutation_kind": self.mutation_kind.value,
+            "alignment_requirement": self.alignment_requirement.value,
+            "coverage_participation": self.coverage_participation.value,
+            # Retain derived aliases so old report readers can consume new
+            # artifacts. Internal policy never reads these fields directly.
             "parent_relative": self.parent_relative,
             "clean_ablation_candidate": self.clean_ablation_candidate,
+            "requires_plan_alignment": self.requires_plan_alignment,
         }
 
     @classmethod
@@ -232,6 +451,57 @@ class MutationTask:
             broad_exploration=broad_exploration,
             clean_ablation=clean_ablation,
         )
+        try:
+            mutation_kind = (
+                MutationKind(str(data["mutation_kind"]))
+                if data.get("mutation_kind") is not None
+                else (
+                    MutationKind.PARENT_RELATIVE
+                    if parent_relative
+                    else MutationKind.PLAN_GUIDED_GENERATION
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown mutation kind: {data.get('mutation_kind')!r}"
+            ) from exc
+        try:
+            coverage_participation = (
+                CoverageParticipation(str(data["coverage_participation"]))
+                if data.get("coverage_participation") is not None
+                else (
+                    CoverageParticipation.RESERVE_AND_LEARN
+                    if (
+                        operator_id == "low_signal_exploration"
+                        and data.get("requires_plan_alignment") is True
+                    )
+                    else CoverageParticipation.NONE
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Unknown coverage participation: "
+                f"{data.get('coverage_participation')!r}"
+            ) from exc
+        try:
+            alignment_requirement = (
+                PlanAlignmentRequirement(str(data["alignment_requirement"]))
+                if data.get("alignment_requirement") is not None
+                else (
+                    PlanAlignmentRequirement.ROUTE_AND_CASE
+                    if coverage_participation is not CoverageParticipation.NONE
+                    else (
+                        PlanAlignmentRequirement.ROUTE_OR_CASE
+                        if data.get("requires_plan_alignment") is True
+                        else PlanAlignmentRequirement.NONE
+                    )
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Unknown plan alignment requirement: "
+                f"{data.get('alignment_requirement')!r}"
+            ) from exc
         return cls(
             task_id=str(data.get("task_id", "")),
             parent_candidate_id=str(data.get("parent_candidate_id", "")),
@@ -247,8 +517,10 @@ class MutationTask:
             rationale=str(data.get("rationale", "")),
             plan=PerturbationPlan.from_jsonable(dict(data.get("plan") or {})),
             purpose=purpose,
-            parent_relative=parent_relative,
             clean_ablation_candidate=clean_ablation,
+            mutation_kind=mutation_kind,
+            alignment_requirement=alignment_requirement,
+            coverage_participation=coverage_participation,
         )
 
 

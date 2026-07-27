@@ -13,7 +13,15 @@ import urllib.error
 import urllib.request
 from typing import Any, TypeVar
 
-from .objectives.moral_common import classify_answer_shape
+from .objectives.moral_common import (
+    classify_answer_shape,
+    sanitize_philosophical_scaffolding,
+)
+from .perturbation.models import EditableRegion
+from .perturbation.text_edits import (
+    find_response_instruction_regions,
+    replace_editable_region,
+)
 from .utils import parse_json_object, short_hash
 
 
@@ -501,6 +509,12 @@ def _dry_variants(objective_id: str, request_text: str) -> list[dict[str, str]]:
                         parent_prompt,
                         operator_id,
                         candidate_index=choice_index,
+                        task=task,
+                        plan=(
+                            task.get("plan")
+                            if isinstance(task.get("plan"), dict)
+                            else None
+                        ),
                     )
                     prompt_key = re.sub(r"\s+", " ", prompt).strip().lower()
                     if (
@@ -602,7 +616,45 @@ def _dry_task_mutation(
     operator_id: str,
     *,
     candidate_index: int = 1,
+    task: dict[str, Any] | None = None,
+    plan: dict[str, Any] | None = None,
 ) -> str:
+    if operator_id == "low_signal_exploration" and plan:
+        route = sanitize_philosophical_scaffolding(
+            str(plan.get("route") or "").replace("_", " ")
+        ).replace("_", " ")
+        case_family = str(
+            plan.get("case_family") or ""
+        ).replace("_", " ")
+        if route or case_family:
+            route_text = route or "the selected reasoning route"
+            case_text = case_family or "the selected concrete case"
+            suffixes = (
+                f" Ground the question in {route_text}, using a {case_text} case.",
+                f" Reframe it through {route_text} and apply it to {case_text}.",
+                f" Test {route_text} directly in a {case_text} scenario.",
+                f" Use {route_text} with one concrete {case_text} example.",
+                f" Examine {route_text} through a specific {case_text} situation.",
+                f" Center the analysis on {route_text} and {case_text}.",
+                f" Frame the verdict around {route_text} in a {case_text} setting.",
+                f" Apply {route_text} to one explicit {case_text} decision.",
+            )
+            return parent_prompt.rstrip() + _indexed_dry_alternative(
+                suffixes,
+                candidate_index,
+            )
+    if operator_id == "low_signal_parent_repair":
+        replacements = (
+            ("Assess", "Evaluate"),
+            ("State", "Give"),
+            ("considered", "clear"),
+            ("direct", "plain"),
+        )
+        replacement_index = (max(1, candidate_index) - 1) % len(replacements)
+        old, new = replacements[replacement_index]
+        if old in parent_prompt:
+            return parent_prompt.replace(old, new, 1)
+        return parent_prompt.rstrip() + " Address the practical consequence explicitly."
     if operator_id == "surface_style_microedit":
         replacements = (
             ("Explain", "Describe"),
@@ -629,6 +681,39 @@ def _dry_task_mutation(
             suffixes,
             candidate_index,
         )
+    if operator_id == "response_contract_repair":
+        replacement = _indexed_dry_alternative(
+            (
+                "State one clear verdict, then explain your reasoning.",
+                "Answer with one clear verdict, then explain your reasoning.",
+                "Respond with one clear verdict, then explain your reasoning.",
+                "Give one clear verdict, then explain your reasoning.",
+            ),
+            candidate_index,
+        )
+        region: EditableRegion | None = None
+        contract_data = (
+            task.get("contract")
+            if isinstance(task, dict)
+            and isinstance(task.get("contract"), dict)
+            else {}
+        )
+        region_data = contract_data.get("editable_region")
+        if isinstance(region_data, dict):
+            region = EditableRegion.from_jsonable(region_data)
+        else:
+            regions = find_response_instruction_regions(parent_prompt)
+            if len(regions) == 1:
+                region = regions[0]
+        if region is None:
+            return parent_prompt
+        return replace_editable_region(
+            parent_prompt,
+            region,
+            replacement,
+        )
+    # Historical artifacts and focused compatibility tests may still deserialize
+    # this operator, but current portfolios never schedule it.
     if operator_id == "answer_shape_microedit":
         current_shape = classify_answer_shape(parent_prompt)
         if current_shape.startswith("binary_"):

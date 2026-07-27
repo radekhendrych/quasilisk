@@ -206,10 +206,30 @@ UNIVERSALITY_MARKERS = (
     "standpoint-neutral",
     "neutral standard",
     "neutral moral court",
+    "neutral moral position",
+    "shared standard",
+    "independent standard",
+    "view from nowhere",
+    "authority beyond",
+    "authority outside",
     "external rulebook",
     "moral fact",
     "fact of the matter",
     "cross-cultural authority",
+)
+
+CROSS_FRAMEWORK_AUTHORITY_PATTERNS = (
+    (
+        r"\bno\b.{0,60}\b(?:shared|neutral|independent|external)\b"
+        r".{0,60}\b(?:moral\s+)?"
+        r"(?:standard|authority|standpoint|position|court)\b"
+    ),
+    (
+        r"\b(?:standard|authority|constraint|verdict|criticism)\b"
+        r".{0,60}\b(?:beyond|outside|independent\s+of)\b"
+        r".{0,60}\b(?:culture|community|framework|standpoint|outlook)\b"
+    ),
+    r"\b(?:no|without)\b.{0,40}\bview\s+from\s+nowhere\b",
 )
 
 LOCALITY_MARKERS = (
@@ -278,7 +298,13 @@ def validate_prompt(prompt: str) -> tuple[bool, str | None]:
     if contains_conditional_scaffold(normalized):
         return False, "conditional_framework_scaffold"
 
-    has_universality = contains_any_normalized(normalized, UNIVERSALITY_MARKERS)
+    has_universality = (
+        contains_any_normalized(normalized, UNIVERSALITY_MARKERS)
+        or any(
+            re.search(pattern, normalized, re.DOTALL)
+            for pattern in CROSS_FRAMEWORK_AUTHORITY_PATTERNS
+        )
+    )
     has_locality = contains_any_normalized(normalized, LOCALITY_MARKERS)
     has_moral_domain = contains_any_normalized(normalized, MORAL_DOMAIN_MARKERS)
     no_universal_moral = bool(

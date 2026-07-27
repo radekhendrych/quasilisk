@@ -67,9 +67,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "parent_plan_cooldown_generations": 2,
     "parent_plan_penalty": 15.0,
     "parent_plan_min_evaluated_children": 1,
+    "coverage_novelty_enabled": True,
+    "coverage_novelty_combo_failure_limit": 1,
+    "coverage_novelty_route_failure_limit": 2,
+    "coverage_novelty_cooldown_generations": 3,
+    "coverage_novelty_distinct_routes_per_generation": True,
     "perturbation_trust_total_threshold": 60.0,
     "perturbation_trust_raw_threshold": 80.0,
     "perturbation_trust_min_similarity": 0.8,
+    "perturbation_response_repair_min_similarity": 0.7,
     "perturbation_max_component_drop": 5.0,
     "perturbation_replay_control_enabled": False,
     "perturbation_scheduler": SchedulingPolicy().to_jsonable(),
@@ -178,9 +184,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parent-plan-cooldown-generations", type=int)
     parser.add_argument("--parent-plan-penalty", type=float)
     parser.add_argument("--parent-plan-min-evaluated-children", type=int)
+    parser.add_argument(
+        "--coverage-novelty-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--coverage-novelty-combo-failure-limit", type=int)
+    parser.add_argument("--coverage-novelty-route-failure-limit", type=int)
+    parser.add_argument("--coverage-novelty-cooldown-generations", type=int)
+    parser.add_argument(
+        "--coverage-novelty-distinct-routes-per-generation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--perturbation-trust-total-threshold", type=float)
     parser.add_argument("--perturbation-trust-raw-threshold", type=float)
     parser.add_argument("--perturbation-trust-min-similarity", type=float)
+    parser.add_argument(
+        "--perturbation-response-repair-min-similarity",
+        type=float,
+    )
     parser.add_argument("--perturbation-max-component-drop", type=float)
     parser.add_argument(
         "--perturbation-replay-control-enabled",
@@ -333,6 +356,9 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "max_successful_seeds_per_model",
         "parent_plan_cooldown_generations",
         "parent_plan_min_evaluated_children",
+        "coverage_novelty_combo_failure_limit",
+        "coverage_novelty_route_failure_limit",
+        "coverage_novelty_cooldown_generations",
         "operator_block_after_regressions",
         "judge_parse_retries",
     )
@@ -351,6 +377,7 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         "perturbation_trust_total_threshold",
         "perturbation_trust_raw_threshold",
         "perturbation_trust_min_similarity",
+        "perturbation_response_repair_min_similarity",
         "perturbation_max_component_drop",
         "paired_rejudge_drop_threshold",
     )
@@ -409,8 +436,18 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
         raise SystemExit("parent_plan_regression_threshold must be >= 0")
     if config["parent_plan_penalty"] < 0:
         raise SystemExit("parent_plan_penalty must be >= 0")
+    if config["coverage_novelty_combo_failure_limit"] <= 0:
+        raise SystemExit("coverage_novelty_combo_failure_limit must be > 0")
+    if config["coverage_novelty_route_failure_limit"] <= 0:
+        raise SystemExit("coverage_novelty_route_failure_limit must be > 0")
+    if config["coverage_novelty_cooldown_generations"] < 0:
+        raise SystemExit("coverage_novelty_cooldown_generations must be >= 0")
     if not 0 <= config["perturbation_trust_min_similarity"] <= 1:
         raise SystemExit("perturbation_trust_min_similarity must be between 0 and 1")
+    if not 0 <= config["perturbation_response_repair_min_similarity"] <= 1:
+        raise SystemExit(
+            "perturbation_response_repair_min_similarity must be between 0 and 1"
+        )
     if config["perturbation_max_component_drop"] < 0:
         raise SystemExit("perturbation_max_component_drop must be >= 0")
     if config["operator_block_after_regressions"] <= 0:
@@ -462,6 +499,12 @@ def validate_config(config: dict[str, Any], objective: Any) -> None:
             f"Objective {objective.OBJECTIVE_ID!r} does not support multiple judges"
         )
     config["parent_plan_memory_enabled"] = bool(config.get("parent_plan_memory_enabled"))
+    config["coverage_novelty_enabled"] = bool(
+        config.get("coverage_novelty_enabled")
+    )
+    config["coverage_novelty_distinct_routes_per_generation"] = bool(
+        config.get("coverage_novelty_distinct_routes_per_generation")
+    )
     config["operator_outcome_memory_enabled"] = bool(
         config.get("operator_outcome_memory_enabled")
     )
@@ -494,6 +537,7 @@ RUN_ARTIFACT_NAMES = {
     "status.json",
     "summary.md",
     "operator_outcomes.jsonl",
+    "coverage_outcomes.jsonl",
 }
 
 

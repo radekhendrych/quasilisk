@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from types import ModuleType
 
 from quasilisk_harness.objectives.moral_common import (
+    classify_answer_shape,
     contains_argument_adjudication,
     contains_conditional_scaffold,
     contains_philosophical_label,
@@ -14,8 +15,11 @@ from quasilisk_harness.objectives.moral_common import (
 from quasilisk_harness.perturbation.fingerprint import changed_factors, token_similarity
 from quasilisk_harness.perturbation.fingerprint import canonical_factor, canonical_factors
 from quasilisk_harness.perturbation.models import (
+    EditableRegionKind,
     MutationContract,
+    MutationKind,
     MutationTask,
+    PlanAlignmentRequirement,
     PerturbationPlan,
     PromptFingerprint,
     ValidationResult,
@@ -24,6 +28,10 @@ from quasilisk_harness.perturbation.space import (
     case_keywords_for_objective,
     objective_requires_direct_adjudication,
     route_keywords_for_objective,
+)
+from quasilisk_harness.perturbation.text_edits import (
+    extract_editable_replacement,
+    response_instruction_reasons,
 )
 from quasilisk_harness.utils import MAX_PROMPT_CHARS, has_forbidden_variant_pattern, word_count
 
@@ -91,6 +99,46 @@ def _intended_factor_satisfied(
     return bool(set(satisfiers).intersection(changed))
 
 
+def _route_alignment(
+    *,
+    prompt: str,
+    lower: str,
+    objective: ModuleType,
+    plan: PerturbationPlan,
+) -> tuple[bool, str, str | None]:
+    route_hits = route_keywords_for_objective(plan.objective_id).get(
+        plan.route,
+        (),
+    )
+    keyword_aligned = any(term in lower for term in route_hits)
+    inferred_route = ""
+    classifier_error: str | None = None
+    try:
+        features = objective.classify_features(prompt)
+    except Exception as exc:
+        features = {}
+        classifier_error = f"{type(exc).__name__}: {exc}"
+    if isinstance(features, dict):
+        inferred_route = str(
+            features.get("argument_route")
+            or features.get("argument_frame")
+            or ""
+        )
+    return (
+        keyword_aligned or inferred_route == plan.route,
+        inferred_route,
+        classifier_error,
+    )
+
+
+def _case_alignment(*, lower: str, plan: PerturbationPlan) -> bool:
+    case_hits = case_keywords_for_objective(plan.objective_id).get(
+        plan.case_family,
+        (),
+    )
+    return any(term in lower for term in case_hits)
+
+
 def validate_planned_prompt(
     *,
     prompt: str,
@@ -143,10 +191,13 @@ def validate_planned_prompt(
     elif objective_requires_direct_adjudication(plan.objective_id):
         reasons.append("missing_direct_adjudication")
 
-    route_hits = route_keywords_for_objective(plan.objective_id).get(plan.route, ())
-    case_hits = case_keywords_for_objective(plan.objective_id).get(plan.case_family, ())
-    route_aligned = any(term in lower for term in route_hits) if route_hits else True
-    case_aligned = any(term in lower for term in case_hits) if case_hits else True
+    route_aligned, inferred_route, classifier_error = _route_alignment(
+        prompt=prompt,
+        lower=lower,
+        objective=objective,
+        plan=plan,
+    )
+    case_aligned = _case_alignment(lower=lower, plan=plan)
     warnings: list[str] = []
     if route_aligned:
         rubric["plan_alignment"] += 0.5
@@ -167,6 +218,8 @@ def validate_planned_prompt(
         diagnostics={
             "route_aligned": route_aligned,
             "case_aligned": case_aligned,
+            "inferred_route": inferred_route,
+            "route_classifier_error": classifier_error,
         },
     )
 
@@ -176,10 +229,19 @@ def validate_absolute_prompt(
     prompt: str,
     objective: ModuleType,
     plan: PerturbationPlan,
-    parent_relative: bool = False,
+    mutation_kind: MutationKind = MutationKind.PLAN_GUIDED_GENERATION,
+    alignment_requirement: PlanAlignmentRequirement = (
+        PlanAlignmentRequirement.NONE
+    ),
 ) -> ValidationResult:
     """Validate prompt integrity without treating preserved parent scaffolds as defects."""
 
+    if not isinstance(mutation_kind, MutationKind):
+        raise TypeError("mutation_kind must be a MutationKind")
+    if not isinstance(alignment_requirement, PlanAlignmentRequirement):
+        raise TypeError(
+            "alignment_requirement must be a PlanAlignmentRequirement"
+        )
     reasons: list[str] = []
     lower = prompt.lower().strip()
     rubric = {
@@ -214,27 +276,44 @@ def validate_absolute_prompt(
     elif objective_requires_direct_adjudication(plan.objective_id):
         reasons.append("missing_direct_adjudication")
 
-    route_hits = route_keywords_for_objective(plan.objective_id).get(plan.route, ())
-    case_hits = case_keywords_for_objective(plan.objective_id).get(plan.case_family, ())
-    route_aligned = (
-        True
-        if parent_relative
-        else any(term in lower for term in route_hits) if route_hits else True
+    route_aligned, inferred_route, classifier_error = _route_alignment(
+        prompt=prompt,
+        lower=lower,
+        objective=objective,
+        plan=plan,
     )
-    case_aligned = (
-        True
-        if parent_relative
-        else any(term in lower for term in case_hits) if case_hits else True
+    case_aligned = _case_alignment(lower=lower, plan=plan)
+    alignment_satisfied = alignment_requirement.satisfied_by(
+        route_aligned=route_aligned,
+        case_aligned=case_aligned,
     )
     warnings: list[str] = []
     if route_aligned:
         rubric["plan_alignment"] += 0.5
-    else:
+    elif alignment_requirement in {
+        PlanAlignmentRequirement.ROUTE,
+        PlanAlignmentRequirement.ROUTE_AND_CASE,
+    }:
         warnings.append("route_alignment_not_detected")
     if case_aligned:
         rubric["plan_alignment"] += 0.5
-    else:
+    elif alignment_requirement in {
+        PlanAlignmentRequirement.CASE,
+        PlanAlignmentRequirement.ROUTE_AND_CASE,
+    }:
         warnings.append("case_alignment_not_detected")
+    if (
+        alignment_requirement is PlanAlignmentRequirement.ROUTE_OR_CASE
+        and not alignment_satisfied
+    ):
+        warnings.extend(
+            (
+                "route_alignment_not_detected",
+                "case_alignment_not_detected",
+            )
+        )
+    if not alignment_satisfied:
+        reasons.append("missing_plan_alignment")
     if word_count(prompt) < 8:
         reasons.append("too_few_words")
     return _result(
@@ -244,9 +323,15 @@ def validate_absolute_prompt(
         diagnostics={
             "route_aligned": route_aligned,
             "case_aligned": case_aligned,
-            "alignment_basis": (
-                "parent_relative_contract" if parent_relative else "attempt_plan"
+            "inferred_route": inferred_route,
+            "route_classifier_error": classifier_error,
+            "alignment_requirement": alignment_requirement.value,
+            "alignment_satisfied": alignment_satisfied,
+            "mutation_kind": mutation_kind.value,
+            "requires_plan_alignment": (
+                alignment_requirement is not PlanAlignmentRequirement.NONE
             ),
+            "alignment_basis": "detected_prompt_evidence",
         },
     )
 
@@ -301,11 +386,52 @@ def validate_transition(
     }
     allowed = set(canonical_factors(contract.allowed_factors))
     protected = set(canonical_factors(contract.protected_factors))
+    required_values = {
+        canonical_factor(str(key)): value
+        for key, value in contract.required_factor_values.items()
+    }
     intended_factor = canonical_factor(task.factor) if task is not None else ""
     is_control = task is not None and task.is_control
-    parent_relative = task.parent_relative if task is not None else True
+    mutation_kind = (
+        task.mutation_kind
+        if task is not None
+        else MutationKind.PARENT_RELATIVE
+    )
+    parent_relative = mutation_kind.parent_relative
     clean_ablation = task.clean_ablation_candidate if task is not None else False
     broad_allowed = "*" in allowed
+    editable_replacement: str | None = None
+    editable_region_reasons: list[str] = []
+    editable_response_shape: str | None = None
+    if contract.editable_region is not None:
+        editable_replacement, extraction_reasons = extract_editable_replacement(
+            parent_text=parent.surface_text,
+            child_text=child.surface_text,
+            region=contract.editable_region,
+        )
+        editable_region_reasons.extend(extraction_reasons)
+        if (
+            editable_replacement is not None
+            and contract.editable_region.kind
+            is EditableRegionKind.RESPONSE_INSTRUCTION
+        ):
+            expected_shape = required_values.get("answer_shape")
+            expected_shape_text = (
+                str(expected_shape)
+                if expected_shape is not None
+                else None
+            )
+            editable_response_shape = classify_answer_shape(
+                editable_replacement
+            )
+            editable_region_reasons.extend(
+                "editable_region_response_instruction:" + item
+                for item in response_instruction_reasons(
+                    editable_replacement,
+                    expected_shape=expected_shape_text,
+                )
+            )
+        reasons.extend(editable_region_reasons)
     if similarity < contract.min_token_similarity:
         reasons.append(
             f"similarity_below_minimum:{similarity:.4f}<{contract.min_token_similarity:.4f}"
@@ -319,6 +445,18 @@ def validate_transition(
             reasons.append(f"protected_factor_changed:{factor}")
         if not broad_allowed and factor not in allowed:
             reasons.append(f"undeclared_factor_changed:{factor}")
+    required_value_mismatches: dict[str, dict[str, object]] = {}
+    for factor, expected in required_values.items():
+        actual = child_dimensions.get(factor)
+        if actual != expected:
+            required_value_mismatches[factor] = {
+                "expected": expected,
+                "actual": actual,
+            }
+            reasons.append(
+                "required_factor_value_mismatch:"
+                f"{factor}:{actual!s}!={expected!s}"
+            )
     intended_factor_changed = (
         True
         if not clean_ablation or is_control
@@ -338,7 +476,11 @@ def validate_transition(
             reasons.append(f"protected_span_missing:{span}")
     if not parent_relative:
         warnings.append("not_parent_relative")
-    if not clean_ablation and not is_control:
+    if (
+        not clean_ablation
+        and not is_control
+        and contract.editable_region is None
+    ):
         warnings.append("not_clean_ablation")
     if broad_allowed:
         warnings.append("broad_factor_contract")
@@ -348,6 +490,9 @@ def validate_transition(
     if reasons:
         tier = "rejected"
         confidence = 0.0
+    elif contract.editable_region is not None:
+        tier = "constrained_repair"
+        confidence = min(1.0, max(0.0, similarity))
     elif clean_ablation and intended_factor_changed and retention_constraints_met:
         tier = "clean_ablation"
         confidence = min(1.0, max(0.0, similarity))
@@ -381,15 +526,28 @@ def validate_transition(
                 factor: parent_dimensions.get(factor)
                 for factor in sorted(protected)
             },
+            "required_factor_values": dict(sorted(required_values.items())),
+            "required_factor_value_mismatches": dict(
+                sorted(required_value_mismatches.items())
+            ),
             "first_surface_delta": _first_token_delta(parent, child),
             "allowed_factors": sorted(allowed),
             "protected_factors": sorted(protected),
             "intended_factor": intended_factor,
             "intended_factor_changed": intended_factor_changed,
             "parent_relative": parent_relative,
+            "mutation_kind": mutation_kind.value,
             "clean_ablation_candidate": clean_ablation,
             "retention_constraints_met": retention_constraints_met,
             "missing_protected_spans": missing_spans,
             "token_similarity": similarity,
+            "editable_region": (
+                contract.editable_region.to_jsonable()
+                if contract.editable_region is not None
+                else None
+            ),
+            "editable_region_replacement": editable_replacement,
+            "editable_region_reasons": editable_region_reasons,
+            "editable_response_shape": editable_response_shape,
         },
     )

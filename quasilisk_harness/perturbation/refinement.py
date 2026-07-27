@@ -15,12 +15,17 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..utils import short_hash
-from .models import MutationTask, TaskPurpose
+from .models import (
+    MutationTask,
+    PlanAlignmentRequirement,
+    TaskPurpose,
+)
 from .rejection_memory import normalized_prompt_key
 
 
 MAX_VARIANTS_PER_TASK = 8
 TRANSITION_TIER_RANK = {
+    "constrained_repair": 4.5,
     "clean_ablation": 4.0,
     "accepted": 3.0,
     "accepted_low_confidence": 2.0,
@@ -40,7 +45,7 @@ ABSOLUTE_TIER_RANK = {
 class RefinementPolicy:
     """Immutable controls for model-side oversampling and bounded revision."""
 
-    variants_per_task: int = 2
+    variants_per_task: int = 1
     revision_enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -286,12 +291,34 @@ def revision_feedback(
             values = diagnostics.get("protected_factor_requirements")
             if isinstance(values, dict):
                 required_values.update(values)
+        required_target_values = dict(task.contract.required_factor_values)
+        plan_alignment_instruction = _alignment_revision_instruction(task)
+        editable_region = task.contract.editable_region
+        editable_region_instruction = (
+            "Replace exactly the editable response-instruction span "
+            f"{editable_region.original_text!r}; preserve its prefix and suffix "
+            "exactly and add no objective claim or stance to the replacement. "
+            if editable_region is not None
+            else ""
+        )
         feedback.append(
             {
                 "task_id": task.task_id,
                 "intended_factor": task.factor,
                 "failure_reasons": dict(sorted(reasons.items())),
                 "required_protected_values": dict(sorted(required_values.items())),
+                "required_target_values": dict(
+                    sorted(required_target_values.items())
+                ),
+                "alignment_requirement": task.alignment_requirement.value,
+                "coverage_participation": (
+                    task.coverage_participation.value
+                ),
+                "editable_region": (
+                    editable_region.to_jsonable()
+                    if editable_region is not None
+                    else None
+                ),
                 "failed_outputs": [
                     {
                         "output_id": item.assessment.output_id,
@@ -328,13 +355,35 @@ def revision_feedback(
                 "revision_instruction": (
                     f"Return one distinct replacement that changes the declared "
                     f"factor {task.factor!r}, preserves every required factor value, "
-                    "and resolves every listed failure. For answer_shape, change "
-                    "the semantic response structure rather than only substituting "
-                    "synonyms. Do not repeat any failed prompt."
+                    "reaches every required target value, and resolves every listed "
+                    "failure. For answer_shape, replace the existing response "
+                    "instruction so the semantic response structure changes; do not "
+                    "append a conflicting instruction or merely substitute synonyms. "
+                    f"{editable_region_instruction}{plan_alignment_instruction}"
+                    "Do not repeat any failed prompt."
                 ),
             }
         )
     return feedback
+
+
+def _alignment_revision_instruction(task: MutationTask) -> str:
+    requirement = task.alignment_requirement
+    if requirement is PlanAlignmentRequirement.NONE:
+        return ""
+    if requirement is PlanAlignmentRequirement.ROUTE:
+        return f"Realize the selected route {task.plan.route!r}. "
+    if requirement is PlanAlignmentRequirement.CASE:
+        return f"Realize the selected case family {task.plan.case_family!r}. "
+    if requirement is PlanAlignmentRequirement.ROUTE_OR_CASE:
+        return (
+            "Realize at least one selected plan axis: route "
+            f"{task.plan.route!r} or case family {task.plan.case_family!r}. "
+        )
+    return (
+        f"Realize both the selected route {task.plan.route!r} and case family "
+        f"{task.plan.case_family!r}. "
+    )
 
 
 def _decide_task_assessments(

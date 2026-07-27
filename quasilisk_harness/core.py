@@ -28,7 +28,10 @@ from .perturbation.comparison import (
 )
 from .perturbation.models import MutationTask, PerturbationPlan, TaskPurpose
 from .perturbation.operator_ledger import OperatorOutcomeLedger
-from .perturbation.outcome_memory import ParentPlanOutcomeMemory
+from .perturbation.outcome_memory import (
+    CoverageNoveltyMemory,
+    ParentPlanOutcomeMemory,
+)
 from .perturbation.planner import select_plan
 from .perturbation.portfolio import build_mutation_tasks
 from .perturbation.refinement import (
@@ -1216,6 +1219,7 @@ def query_planned_perturbator(
     perturbator_max_tokens: int | None,
     template_config: dict[str, Any] | None = None,
     outcome_memory: ParentPlanOutcomeMemory | None = None,
+    coverage_memory: CoverageNoveltyMemory | None = None,
     operator_ledger: OperatorOutcomeLedger | None = None,
     scheduling_policy: SchedulingPolicy | None = None,
     refinement_policy: RefinementPolicy | None = None,
@@ -1234,6 +1238,7 @@ def query_planned_perturbator(
         archive_elites=archive_context,
         defense_profile=defense,
         outcome_memory=outcome_memory,
+        coverage_memory=coverage_memory,
         generation=generation,
     )
     defense_json = defense.to_jsonable()
@@ -1266,6 +1271,14 @@ def query_planned_perturbator(
     )
     selected_tasks = list(task_schedule.selected)
     model_tasks = list(task_schedule.generation_tasks)
+    if coverage_memory is not None:
+        for task in model_tasks:
+            if task.coverage_participation.reserves:
+                coverage_memory.reserve_plan(
+                    task.plan,
+                    generation=generation,
+                    attempt_id=attempt_id,
+                )
     task_accounting = {
         "proposed": len(proposed_tasks),
         "blocked": len(blocked_tasks),
@@ -1320,6 +1333,11 @@ def query_planned_perturbator(
         "outcome_memory": (
             outcome_memory.to_jsonable(generation=generation)
             if outcome_memory is not None
+            else None
+        ),
+        "coverage_novelty_memory": (
+            coverage_memory.to_jsonable(generation=generation)
+            if coverage_memory is not None
             else None
         ),
         "raw_response": None,
@@ -1941,6 +1959,13 @@ def _candidate_from_assessment(
         metadata["task_purpose"] = task.purpose.value
         metadata["archive_eligible"] = task.contract.archive_eligible
         metadata["parent_relative"] = task.parent_relative
+        metadata["mutation_kind"] = task.mutation_kind.value
+        metadata["alignment_requirement"] = (
+            task.alignment_requirement.value
+        )
+        metadata["coverage_participation"] = (
+            task.coverage_participation.value
+        )
         metadata["clean_ablation_candidate"] = task.clean_ablation_candidate
     if refinement_disposition is not None:
         metadata["refinement"] = {
@@ -2850,6 +2875,7 @@ def run_for_target(
     perturbations_path = out_dir / "perturbations.jsonl"
     generation_traces_path = out_dir / "generation_traces.jsonl"
     parent_plan_outcomes_path = out_dir / "parent_plan_outcomes.jsonl"
+    coverage_outcomes_path = out_dir / "coverage_outcomes.jsonl"
     operator_outcomes_path = out_dir / "operator_outcomes.jsonl"
     search_stats_path = out_dir / "search_stats.jsonl"
     run_statistics_path = out_dir / "run_statistics.json"
@@ -2873,6 +2899,24 @@ def run_for_target(
                 config.get("parent_plan_min_evaluated_children", 1)
             ),
         )
+    coverage_memory = CoverageNoveltyMemory(
+        enabled=bool(config.get("coverage_novelty_enabled", True)),
+        combo_failure_limit=int(
+            config.get("coverage_novelty_combo_failure_limit", 1)
+        ),
+        route_failure_limit=int(
+            config.get("coverage_novelty_route_failure_limit", 2)
+        ),
+        cooldown_generations=int(
+            config.get("coverage_novelty_cooldown_generations", 3)
+        ),
+        distinct_routes_per_generation=bool(
+            config.get(
+                "coverage_novelty_distinct_routes_per_generation",
+                True,
+            )
+        ),
+    )
     operator_ledger = OperatorOutcomeLedger(
         enabled=bool(config.get("operator_outcome_memory_enabled", True)),
         max_component_drop=float(
@@ -2946,6 +2990,9 @@ def run_for_target(
         "parent_plan_memory_active": 0,
         "parent_plan_memory_outcomes": 0,
         "parent_plan_memory_regressions": 0,
+        "coverage_novelty_enabled": coverage_memory.enabled,
+        "coverage_novelty_active_failures": 0,
+        "coverage_novelty_outcomes": 0,
         "operator_outcome_memory_enabled": operator_ledger.enabled,
         "operator_outcome_records": 0,
         "operator_outcome_blocked": 0,
@@ -2963,10 +3010,16 @@ def run_for_target(
         "optimization_task_conditional_rate": 0.0,
         "optimization_task_nomination_headroom": 0.0,
         "optimization_target_feasible_from_nominations": None,
+        "optimization_task_target_feasible_from_nominations": None,
         "revision_task_success_rate": 0.0,
         "optimization_conditional_rate": 0.0,
         "optimization_target_gap": -0.5,
-        "optimization_target_basis": "attempted_optimization_tasks",
+        "optimization_target_met": False,
+        "optimization_target_basis": (
+            "perturbator_produced_optimization_variants"
+        ),
+        "optimization_task_target_gap": -0.5,
+        "optimization_task_target_met": False,
         "perturbator_delivery_rate": 0.0,
         "perturbator_absolute_valid_rate": 0.0,
         "perturbator_transition_contract_valid_rate": 0.0,
@@ -3034,6 +3087,10 @@ def run_for_target(
             state["parent_plan_memory_active"] = len(
                 outcome_memory.active_entries(generation)
             )
+        coverage_memory.expire(generation)
+        state["coverage_novelty_active_failures"] = len(
+            coverage_memory.active_failures(generation)
+        )
         write_status(out_dir, state)
         parents = select_planned_parents(archive, config["parents_per_iteration"], rng)
         selection_method = (
@@ -3084,6 +3141,7 @@ def run_for_target(
                 perturbator_max_tokens=config["perturbator_max_tokens"],
                 template_config=template_config,
                 outcome_memory=outcome_memory,
+                coverage_memory=coverage_memory,
                 operator_ledger=operator_ledger,
                 scheduling_policy=scheduling_policy,
                 refinement_policy=refinement_policy,
@@ -3115,6 +3173,54 @@ def run_for_target(
             candidates = list(refinement.selected_candidates)
             validated_candidates = list(refinement.validated_candidates)
             rejected = list(refinement.rejected)
+            plan_data = perturbator_audit.get("perturbation_plan")
+            coverage_tasks: list[MutationTask] = []
+            for task_data in perturbator_audit.get("mutation_tasks") or ():
+                if not isinstance(task_data, dict):
+                    continue
+                try:
+                    task = MutationTask.from_jsonable(task_data)
+                except (TypeError, ValueError):
+                    continue
+                if task.coverage_participation.learns:
+                    coverage_tasks.append(task)
+            if isinstance(plan_data, dict) and coverage_tasks:
+                discovery_plan = PerturbationPlan.from_jsonable(plan_data)
+                accepted_coverage_children = 0
+                for candidate in validated_candidates:
+                    task_data = candidate.metadata.get("mutation_task")
+                    if not isinstance(task_data, dict):
+                        continue
+                    try:
+                        candidate_task = MutationTask.from_jsonable(task_data)
+                    except (TypeError, ValueError):
+                        continue
+                    if candidate_task.coverage_participation.learns:
+                        accepted_coverage_children += 1
+                coverage_record = coverage_memory.record_unusable_attempt(
+                    generation=generation,
+                    attempt_id=attempt_id,
+                    plan=discovery_plan,
+                    accepted_discovery_children=accepted_coverage_children,
+                    generation_error=(
+                        str(perturbator_audit.get("error"))
+                        if perturbator_audit.get("error")
+                        else None
+                    ),
+                )
+                if coverage_record is not None:
+                    append_jsonl(
+                        coverage_outcomes_path,
+                        {
+                            "timestamp": utc_now(),
+                            "objective_id": objective.OBJECTIVE_ID,
+                            "target_model": target_model,
+                            **coverage_record,
+                        },
+                    )
+                    state["coverage_novelty_outcomes"] = int(
+                        state.get("coverage_novelty_outcomes", 0)
+                    ) + 1
             rejection_memory.record(rejected, generation=generation)
             assignment_audits = [
                 perturbator_audit.get("variant_assignment") or {},
@@ -3364,6 +3470,27 @@ def run_for_target(
             state["parent_plan_memory_active"] = len(
                 outcome_memory.active_entries(generation + 1)
             )
+        coverage_records = coverage_memory.record_generation_outcomes(
+            generation=generation,
+            parent_scores=parent_scores,
+            child_evaluations=generation_evals,
+        )
+        for coverage_record in coverage_records:
+            append_jsonl(
+                coverage_outcomes_path,
+                {
+                    "timestamp": utc_now(),
+                    "objective_id": objective.OBJECTIVE_ID,
+                    "target_model": target_model,
+                    **coverage_record,
+                },
+            )
+        state["coverage_novelty_outcomes"] = int(
+            state.get("coverage_novelty_outcomes", 0)
+        ) + len(coverage_records)
+        state["coverage_novelty_active_failures"] = len(
+            coverage_memory.active_failures(generation + 1)
+        )
         operator_records = operator_ledger.record(
             parents={
                 str(parent.get("candidate_id", "")): parent
@@ -3437,6 +3564,7 @@ def run_for_target(
         "saved_seed_info": saved_seed_info,
         "archive_path": str(archive_path),
         "affordances_path": str(affordances_path),
+        "coverage_outcomes_path": str(coverage_outcomes_path),
         "run_statistics_path": str(run_statistics_path),
         "search_metrics": search_statistics["overall"],
         "search_top_parent_cells": search_statistics["top_parent_cells"],
@@ -3483,6 +3611,12 @@ def run_for_target(
             ),
             "parent_plan_memory_regressions": int(
                 state.get("parent_plan_memory_regressions", 0)
+            ),
+            "coverage_novelty_active_failures": int(
+                state.get("coverage_novelty_active_failures", 0)
+            ),
+            "coverage_novelty_outcomes": int(
+                state.get("coverage_novelty_outcomes", 0)
             ),
             "operator_outcome_records": int(
                 state.get("operator_outcome_records", 0)
@@ -3589,6 +3723,10 @@ def write_summary(
             "optimization_nomination_rate",
             "optimization_conditional_rate",
             "optimization_target_gap",
+            "optimization_target_met",
+            "optimization_target_basis",
+            "optimization_task_target_gap",
+            "optimization_task_target_met",
             "perturbator_delivery_rate",
             "perturbator_absolute_valid_rate",
             "perturbator_transition_contract_valid_rate",

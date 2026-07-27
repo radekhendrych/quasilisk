@@ -84,7 +84,8 @@ def assess_candidate_variants(
                     prompt=prompt,
                     objective=objective,
                     plan=plan,
-                    parent_relative=task.parent_relative,
+                    mutation_kind=task.mutation_kind,
+                    alignment_requirement=task.alignment_requirement,
                 )
             if validation_result is not None:
                 validation = validation_result.to_jsonable()
@@ -119,7 +120,10 @@ def assess_candidate_variants(
                                 prompt=repaired_prompt,
                                 objective=objective,
                                 plan=plan,
-                                parent_relative=task.parent_relative,
+                                mutation_kind=task.mutation_kind,
+                                alignment_requirement=(
+                                    task.alignment_requirement
+                                ),
                             )
                         if repaired_result.accepted:
                             prompt = repaired_prompt

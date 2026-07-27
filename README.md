@@ -75,8 +75,11 @@ Each run writes to `runs/<timestamp>/` unless `--out-dir` is provided.
   revision call, raw responses, and parsed variants.
 - `defense_profiles_<model>.jsonl`: extracted target resistance profiles used by the planner.
 - `parent_plan_outcomes.jsonl`: per-generation parent-plan outcome records used by outcome memory; this does not duplicate target responses from `events.jsonl`.
+- `coverage_outcomes.jsonl`: cross-parent discovery-memory decisions, including
+  validator-unusable attempts, evaluated routes with no improving child, and
+  successful routes reopened for exploration.
 - `operator_outcomes.jsonl`: quality-aware outcomes for individual mutation operators and factors, including persistent run-local blocking decisions.
-- `search_stats.jsonl`: append-only schema-v5 records for every produced variant,
+- `search_stats.jsonl`: append-only schema-v6 records for every produced variant,
   including task purpose, lifecycle stage, terminal outcome, validation,
   pre-target refinement disposition, budget, score comparison, and final
   archive retention.
@@ -92,18 +95,21 @@ generation traces, perturbations, candidate metadata, and child evaluations.
 Archive effectiveness is credited from the final archive state after each
 generation, so parallel evaluation order and transient insertions do not inflate
 retention, new-cell, or cell-improvement rates.
-The 50% optimization target uses `optimization_task_end_to_end_rate`: attempted
-optimization mutation tasks whose nominated child improved on its parent. This
-keeps oversampling from mechanically depressing the goal. Raw-output efficiency
-remains visible in `optimization_end_to_end_rate`, `optimization_valid_rate`,
-and `optimization_nomination_rate`. The task funnel separately reports delivery,
+The reporting benchmark uses `optimization_end_to_end_rate`: improved
+perturbator-produced optimization variants divided by all produced optimization
+variants, including invalid, truncated, and unscored output in the denominator.
+This directly measures the stated child-output objective. The task-level
+`optimization_task_end_to_end_rate` remains a secondary diagnostic, so
+oversampling cannot make an easy task-level number masquerade as output
+efficiency. `optimization_valid_rate` and `optimization_nomination_rate` expose
+the main losses before target evaluation. The task funnel separately reports delivery,
 absolute validity, transition-contract validity, nomination, evaluation, and
 improvement. The raw perturbator funnel reports requested versus parsed output,
 global uniqueness, absolute validity, and parent-relative contract validity, so
 transport or formatting loss is not conflated with an overly strict transition
-validator. `optimization_task_nomination_rate` is the measured upper bound on
-the task-level improvement target, and the summary reports whether that bound
-still makes the 50% target feasible. A valid oversampled alternative
+validator. `optimization_nomination_rate` is the measured upper bound on the
+output-level benchmark, and the summary reports whether that bound still makes
+the benchmark feasible. A valid oversampled alternative
 that loses ranking remains a visible `truncated` lifecycle with
 `refinement_disposition: ranked_out`; it is not mislabeled invalid or budget
 truncation. `revision_task_success_rate` reports how often the single bounded
@@ -185,16 +191,20 @@ with the candidate; the target receives only the final user prompt.
 
 Planned perturbation uses independent mutation tasks. Each task declares one
 operator, one factor, protected parent features/spans, a maximum factor-change
-count, a token-similarity floor, archive eligibility, and one purpose:
+count, a token-similarity floor, optional exact target factor values, archive
+eligibility, and one purpose:
 `optimization`, `discovery`, `diagnostic`, or `control`. Candidate validation
 has two layers: absolute prompt integrity and a parent-relative transition contract.
 This permits one-factor ablation without requiring every pre-existing scaffold
 to disappear at once. Broad low-signal and coverage exploration remain available
 as explicit v2 exploration operators, but they are separated from clean
-parent-relative perturbation metrics. Validation records include a tier
-(`rejected`, `accepted_warning`, `accepted_low_confidence`, or
-`clean_ablation`), warnings, changed-factor diagnostics, retention status, and
-confidence. Exact replay controls can be enabled; they run before search
+parent-relative perturbation metrics. Alignment, coverage-memory participation,
+and mutation kind are separate typed task policies; requiring a route does not
+implicitly reserve it or attribute later failures to it. Validation records
+include a tier (`rejected`, `accepted_warning`, `accepted_low_confidence`,
+`clean_ablation`, or `constrained_repair`), warnings, changed-factor
+diagnostics, retention status, and confidence. Exact replay controls can be
+enabled; they run before search
 candidates, remain in `events.jsonl`, bypass duplicate rejection, and never
 enter MAP-Elites. A valid replay becomes the contemporaneous comparison baseline
 for that parent's children and exposes target/judge variance separately.
@@ -206,13 +216,32 @@ policy allocates the remaining target-call budget instead of truncating
 candidates in arrival order. It gives each perturbation attempt one work slot
 before repeats, then uses weighted round-robin allocation across optimization,
 discovery, and diagnostic work.
-For each selected non-control task, the perturbator proposes two alternatives
+For each selected non-control task, the perturbator proposes one alternative
 by default. Absolute and parent-relative validators score every alternative,
 then a deterministic rank based on contract tier, confidence, objective fit,
 directness, artifact freedom, plan alignment, and stable tie-breaking nominates
 at most one child per task. For optimization and diagnostic tasks, contract
 confidence and retention lead the rank; discovery first enforces absolute
 quality and then favors novelty.
+Response structure is not toggled as a generic optimization. An
+evidence-triggered `response_contract_repair` is offered only when high-raw
+defense evidence calls for a clean response contract, and never alongside a
+literal scaffold that the one-factor task cannot legally remove. It targets
+one canonical `verdict_with_explanation` shape. Its contract identifies one
+unambiguous, format-only response-instruction span; validation preserves all
+text outside that span exactly and rejects substantive claim or stance content
+inside the replacement. Broad discovery is intentionally not bound to the
+parent's literal protected spans: objective-level semantic validation governs
+it, while exact spans remain mandatory for parent-relative optimization.
+Plan-guided low-signal coverage must realize both the selected route and case
+family using route classification plus semantic keyword evidence. Objective-
+specific low-signal parent repair is instead parent-relative, preserves semantic
+anchors, and does not reserve or teach coverage memory.
+Cross-parent coverage memory reserves routes within a generation, cools down a
+failed route/case combination, and escalates repeated failures on distinct
+cases to a route-level cooldown. Only evaluated, validator-confirmed aligned
+children provide route/case performance evidence; provider, parsing, and
+validation failures are audited without poisoning route cooldowns.
 If a task has no admissible nominee, the harness may
 make one bounded revision call containing validator reasons for only those
 failed tasks. Revision output passes the same validators and ranking; it never
@@ -324,6 +353,7 @@ Optional trust-region and reliability controls:
   "perturbation_trust_total_threshold": 60,
   "perturbation_trust_raw_threshold": 80,
   "perturbation_trust_min_similarity": 0.8,
+  "perturbation_response_repair_min_similarity": 0.7,
   "perturbation_max_component_drop": 5,
   "perturbation_replay_control_enabled": true,
   "perturbation_scheduler": {
@@ -336,11 +366,16 @@ Optional trust-region and reliability controls:
     "max_control_share": 0.25
   },
   "perturbation_refinement": {
-    "variants_per_task": 2,
+    "variants_per_task": 1,
     "revision_enabled": true
   },
   "operator_outcome_memory_enabled": true,
   "operator_block_after_regressions": 1,
+  "coverage_novelty_enabled": true,
+  "coverage_novelty_combo_failure_limit": 1,
+  "coverage_novelty_route_failure_limit": 2,
+  "coverage_novelty_cooldown_generations": 3,
+  "coverage_novelty_distinct_routes_per_generation": true,
   "judge_parse_retries": 1,
   "paired_rejudge_enabled": false,
   "paired_rejudge_drop_threshold": 30
@@ -359,9 +394,10 @@ to `1` and disabling revision restores single-proposal behavior while retaining
 the same validation and audit schema. Revision is always capped at one call per
 attempt and requests one replacement for each task that lacks a nominee. Since
 only one proposal per task is nominated, nomination rate is also the hard upper
-bound on the all-produced improvement rate; the default of two keeps the 50%
-goal mathematically attainable, while larger oversampling factors deliberately
-trade that headline ceiling for more pre-target choice.
+bound on the all-produced improvement rate. The default of one avoids imposing
+an artificial 50% ceiling before any model output is observed. Larger
+oversampling factors deliberately trade output-level headroom for more
+pre-target choice; every produced alternative remains in the denominator.
 
 Legacy `judge_model` configuration remains supported as a singleton panel.
 `OPENROUTER_JUDGE_MODEL` remains supported for a singleton or comma-separated
@@ -399,6 +435,22 @@ Important flags:
 - `--parent-plan-cooldown-generations`: number of following generations to block or penalize a regressed `(parent_id, strategy, route, case_family)` tuple; defaults to `2`.
 - `--parent-plan-penalty`: priority penalty used when `--parent-plan-memory-mode penalize` is selected; defaults to `15`.
 - `--parent-plan-min-evaluated-children`: minimum non-error children required before a tuple can be blocked or penalized; defaults to `1`.
+- `--coverage-novelty-enabled` / `--no-coverage-novelty-enabled`: independently
+  enable or disable cross-parent route/case discovery memory; enabled by
+  default.
+- `--coverage-novelty-combo-failure-limit`: unsuccessful attempts before one
+  exact route/case combination enters cooldown; defaults to `1`.
+- `--coverage-novelty-route-failure-limit`: unsuccessful route attempts before
+  all cases on that route enter cooldown; defaults to `2`.
+- `--coverage-novelty-cooldown-generations`: number of following generations
+  for discovery cooldowns; defaults to `3`.
+- `--coverage-novelty-distinct-routes-per-generation` /
+  `--no-coverage-novelty-distinct-routes-per-generation`: require separate
+  parents in one generation to use distinct discovery routes when alternatives
+  remain; enabled by default.
+- `--perturbation-response-repair-min-similarity`: lexical-similarity floor for
+  the narrowly scoped response-contract repair; defaults to `0.7`. Exact target
+  shape and protected-factor/span checks still apply.
 - `--max-output-tokens`: optional explicit output cap applied to target, perturbator, and judge calls.
 - `--target-max-tokens`, `--perturbator-max-tokens`, `--judge-max-tokens`: optional explicit per-call output caps. Config-file token caps are preserved unless a CLI token cap overrides them.
 - `--dry-run`: no network, deterministic fake target and perturbator.

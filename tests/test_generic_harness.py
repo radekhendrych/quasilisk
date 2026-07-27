@@ -39,6 +39,7 @@ from quasilisk_harness.perturbation.evidence import ScoreEvidence
 from quasilisk_harness.perturbation.fingerprint import build_prompt_fingerprint
 from quasilisk_harness.perturbation.models import (
     MutationContract,
+    MutationKind,
     MutationTask,
     PerturbationPlan,
     TaskPurpose,
@@ -341,8 +342,8 @@ class GenericHarnessTests(unittest.TestCase):
                 rationale="coverage",
                 plan=plan,
                 purpose=TaskPurpose.DISCOVERY,
-                parent_relative=False,
                 clean_ablation_candidate=False,
+                mutation_kind=MutationKind.PLAN_GUIDED_GENERATION,
             )
             parent = {
                 "candidate_id": "parent",
@@ -3529,8 +3530,8 @@ class GenericHarnessTests(unittest.TestCase):
             rationale="coverage",
             plan=plan,
             purpose=TaskPurpose.DISCOVERY,
-            parent_relative=False,
             clean_ablation_candidate=False,
+            mutation_kind=MutationKind.PLAN_GUIDED_GENERATION,
         )
         result = validate_transition(
             parent=parent,
@@ -3622,14 +3623,13 @@ class GenericHarnessTests(unittest.TestCase):
             prompt=prompt,
             objective=objective,
             plan=plan,
-            parent_relative=True,
+            mutation_kind=MutationKind.PARENT_RELATIVE,
         )
         self.assertTrue(result.accepted, result.reasons)
         self.assertEqual(result.warnings, [])
-        self.assertEqual(result.rubric["plan_alignment"], 1.0)
         self.assertEqual(
             result.diagnostics["alignment_basis"],
-            "parent_relative_contract",
+            "detected_prompt_evidence",
         )
 
     def test_score_quality_excludes_fallback_comparison(self):
@@ -4093,8 +4093,8 @@ class GenericHarnessTests(unittest.TestCase):
             rationale="broad v2 exploration",
             plan=plan,
             purpose=TaskPurpose.DISCOVERY,
-            parent_relative=False,
             clean_ablation_candidate=False,
+            mutation_kind=MutationKind.PLAN_GUIDED_GENERATION,
         )
         candidates, rejected = prepare_candidates(
             objective=objective,
@@ -4556,7 +4556,7 @@ class GenericHarnessTests(unittest.TestCase):
                     "controls_excluded_from_offspring_count"
                 ]
             )
-            self.assertTrue(perturbation["deferred_mutation_tasks"])
+            self.assertEqual(perturbation["deferred_mutation_tasks"], [])
             task_accounting = perturbation["mutation_task_accounting"]
             self.assertTrue(task_accounting["eligibility_reconciled"])
             self.assertTrue(task_accounting["selection_reconciled"])

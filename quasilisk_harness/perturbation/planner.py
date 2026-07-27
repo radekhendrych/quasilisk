@@ -8,7 +8,10 @@ from typing import Any
 
 from quasilisk_harness.perturbation.evidence import coherent_score_view
 from quasilisk_harness.perturbation.models import DefenseProfile, PerturbationPlan
-from quasilisk_harness.perturbation.outcome_memory import ParentPlanOutcomeMemory
+from quasilisk_harness.perturbation.outcome_memory import (
+    CoverageNoveltyMemory,
+    ParentPlanOutcomeMemory,
+)
 from quasilisk_harness.perturbation.defense import (
     score_indicates_capped_harm_near_miss,
     score_indicates_contaminated_high_raw_near_miss,
@@ -213,8 +216,30 @@ def _select_preferred_or_coverage(
     preferred: PerturbationPlan,
     coverage: PerturbationPlan,
     outcome_memory: ParentPlanOutcomeMemory | None,
+    coverage_memory: CoverageNoveltyMemory | None = None,
+    enforce_coverage_novelty: bool = False,
     generation: int,
 ) -> PerturbationPlan:
+    coverage_block_reason = (
+        coverage_memory.block_reason(
+            preferred,
+            generation=generation,
+        )
+        if enforce_coverage_novelty and coverage_memory is not None
+        else None
+    )
+    if coverage_block_reason:
+        return _annotate_plan(
+            coverage,
+            components={
+                "coverage_novelty_blocked_preferred": 1.0,
+                f"coverage_novelty_preferred_{coverage_block_reason}": 1.0,
+            },
+            rationale_suffix=(
+                "Selected as fallback because cross-parent discovery memory "
+                "requires a novel route/case after recent low-signal use."
+            ),
+        )
     if outcome_memory is None:
         return preferred
     if outcome_memory.mode == "block":
@@ -262,6 +287,7 @@ def _coverage_plan(
     archive_elites: list[dict[str, Any]],
     defense_profile: DefenseProfile,
     outcome_memory: ParentPlanOutcomeMemory | None,
+    coverage_memory: CoverageNoveltyMemory | None,
     generation: int,
 ) -> PerturbationPlan:
     route_counts: Counter[str] = Counter()
@@ -331,13 +357,43 @@ def _coverage_plan(
                     "coverage, bounded success, recent repetition, and defense-profile match."
                 ),
             )
-            if _plan_blocked(
+            parent_plan_blocked = _plan_blocked(
                 plan,
                 outcome_memory=outcome_memory,
                 generation=generation,
-            ):
+            )
+            coverage_block_reason = (
+                coverage_memory.block_reason(
+                    plan,
+                    generation=generation,
+                )
+                if coverage_memory is not None
+                else None
+            )
+            if parent_plan_blocked or coverage_block_reason:
                 blocked_count += 1
-                candidate = (priority, route, case_family, components)
+                blocked_components = {
+                    **components,
+                    **(
+                        {"outcome_memory_parent_plan_blocked": 1.0}
+                        if parent_plan_blocked
+                        else {}
+                    ),
+                    **(
+                        {
+                            "coverage_novelty_blocked": 1.0,
+                            f"coverage_novelty_{coverage_block_reason}": 1.0,
+                        }
+                        if coverage_block_reason
+                        else {}
+                    ),
+                }
+                candidate = (
+                    priority,
+                    route,
+                    case_family,
+                    blocked_components,
+                )
                 if best_blocked is None or candidate > best_blocked:
                     best_blocked = candidate
                 continue
@@ -395,6 +451,7 @@ def select_plan(
     defense_profile: DefenseProfile,
     exploit_score_threshold: float = 70.0,
     outcome_memory: ParentPlanOutcomeMemory | None = None,
+    coverage_memory: CoverageNoveltyMemory | None = None,
     generation: int = 0,
 ) -> PerturbationPlan:
     parent_score = _score_total(parent_eval)
@@ -404,6 +461,7 @@ def select_plan(
         archive_elites=archive_elites,
         defense_profile=defense_profile,
         outcome_memory=outcome_memory,
+        coverage_memory=coverage_memory,
         generation=generation,
     )
     scaffold_labels = {
@@ -492,6 +550,8 @@ def select_plan(
             ),
             coverage=coverage,
             outcome_memory=outcome_memory,
+            coverage_memory=coverage_memory,
+            enforce_coverage_novelty=True,
             generation=generation,
         )
 
