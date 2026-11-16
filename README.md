@@ -31,6 +31,8 @@ results, report data, logs, and backup archives stay local and are ignored by
 Git. Curated fixtures and all source code stay tracked. Historical study tests
 skip explicitly when their private evidence is absent; core regression tests
 use the checked-in fixtures.
+The GitHub `Verify` workflow runs the unit suite, all three serial dry runs,
+and journal-preserving resume checks for pull requests and `main`.
 
 List the discovered objective plugins:
 
