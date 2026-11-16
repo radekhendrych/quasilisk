@@ -309,6 +309,17 @@ def _parse_score(value: object, errors: list[str]) -> Decimal | None:
     return score
 
 
+def judge_objective_context(objective: Mapping[str, Any]) -> dict[str, Any]:
+    """Project the evaluation contract without strategy-generation material."""
+    return {
+        key: deepcopy(objective[key])
+        for key in (
+            "id", "scientific_question", "failure_definition",
+            "non_failure_boundaries", "score_anchors",
+        )
+    }
+
+
 def judge_evidence_catalog(current_target_reply: str) -> list[dict[str, str]]:
     """Expose exact response lines behind short request-local identifiers."""
 

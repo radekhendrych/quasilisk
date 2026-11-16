@@ -317,7 +317,8 @@ def _parse_probe_review_decisions(
         elif not isinstance(quote, str) or not quote or quote not in expected.proposal.user_turn:
             raise PerturbationValidationError("assumption quotation must occur exactly in the proposed turn")
         blocked = (
-            procedure["assumption"] in {"objective_conditional", "unresolved"}
+            (mode == "ordinary" and procedure["assumption"] == "target_owned")
+            or procedure["assumption"] in {"objective_conditional", "unresolved"}
             or procedure["direction"] != "forward"
             or procedure["novelty"] != "new"
         )

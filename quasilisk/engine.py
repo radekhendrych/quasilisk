@@ -84,6 +84,7 @@ from .judging import (
     MEMBER_ORDER,
     aggregate_panel,
     judge_evidence_catalog,
+    judge_objective_context,
     judge_role_scope,
     member_assessment_from_output,
     should_schedule_secondary_panel,
@@ -5247,6 +5248,10 @@ def _generation_brief(context: RunContext, state: RunState, unit: Any) -> dict[s
     panel = None if observation is None else next(
         (item for item in state.panel_views.values() if item.observation_id == observation.observation_id), None)
     return {
+        "parent_context_role": (
+            "current_branch" if unit.unit["kind"] == "portfolio_round"
+            else "generation_reference_only"
+        ),
         "parent_candidate_key": None if parent is None else parent.scientific_key,
         "parent_prompt": None if parent is None else parent.prompt,
         "parent_observation_key": None if observation is None else observation.scientific_key,
@@ -5328,7 +5333,11 @@ def _portfolio_current_assessment(
 def _prior_attempts(
     context: RunContext, state: RunState, unit: Any, query: str
 ) -> list[dict[str, Any]]:
-    """Retrieve a bounded exact history; word overlap selects, never judges."""
+    """Retrieve prompts for novelty only, never another branch's concessions.
+
+    The current branch and pinned parent supply response evidence separately.
+    Cross-attempt replies and assessments remain in the journal, not this view.
+    """
     query_words = set(query.casefold().split())
     candidates: list[tuple[int, int, str, dict[str, Any]]] = []
     for previous in state.work_units:
@@ -5343,12 +5352,10 @@ def _prior_attempts(
                 continue
             messages = action.attempts[0].intended["messages"]
             prompt = messages[-1]["content"]
-            result = state.target_results.get(action.action_id)
             item = {
                 "attempt_ref": action.slot["action_scientific_key"],
+                "context_role": "novelty_only",
                 "user_turn": prompt,
-                "target_reply": None if result is None else result.text,
-                "procedure_assessments": [assessment for panel in state.panel_views.values() if panel.target_action_id == action.action_id for assessment in _procedure_assessments(state, panel)],
             }
             candidates.append((
                 len(query_words & set(prompt.casefold().split())),
@@ -7320,7 +7327,7 @@ def _messages_for_action(
         user = _render_template(
             context.resources.templates["judge_user.md"],
             {
-                "OBJECTIVE_JSON": canonical_json(context.objective.objective),
+                "OBJECTIVE_JSON": canonical_json(judge_objective_context(context.objective.objective)),
                 "CONVERSATION_JSON": canonical_json(conversation),
                 "JUDGE_FOCUS_JSON": canonical_json({"primary": "whole_argument", "secondary_a": "premise_ownership", "secondary_b": "commitment_and_counterevidence"}[member_slot]),
                 "CURRENT_TARGET_EVIDENCE_JSON": canonical_json(
@@ -7560,8 +7567,9 @@ def _messages_for_action(
                 }
                 for item in request["items"]
             ]
-        if unit.unit["kind"] in {"portfolio_round", "map_exploration"}:
+        if unit.unit["kind"] == "portfolio_round":
             request["generation_brief"] = _generation_brief(context, state, unit)
+        if unit.unit["kind"] in {"portfolio_round", "map_exploration"}:
             request["prior_attempts"] = _prior_attempts(context, state, unit, canonical_json(request))
         user = _render_template(
             context.resources.templates["probe_review_user.md"],

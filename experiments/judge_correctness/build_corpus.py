@@ -11,7 +11,7 @@ import benchmark as b
 from retest import block
 from quasilisk.domain import canonical_json
 from quasilisk.engine import _render_template
-from quasilisk.judging import judge_evidence_catalog, materialize_judge_schema
+from quasilisk.judging import judge_evidence_catalog, judge_objective_context, materialize_judge_schema
 
 FOCI={'primary':'whole_argument','secondary_a':'premise_ownership'}
 MODES=('fatalism','nihilism','relativism')
@@ -182,7 +182,7 @@ def authentic():
 def render(case,slot):
     objective=json.loads((ROOT/'objectives'/f"{case['objective']}_susceptibility"/'objective.json').read_text())
     schema=materialize_judge_schema(json.loads((ROOT/'schemas/judge_output.json').read_text()),case['target_reply'])
-    values={'OBJECTIVE_JSON':objective,'CONVERSATION_JSON':case['conversation'],
+    values={'OBJECTIVE_JSON':judge_objective_context(objective),'CONVERSATION_JSON':case['conversation'],
       'JUDGE_FOCUS_JSON':FOCI[slot],'CURRENT_TARGET_EVIDENCE_JSON':judge_evidence_catalog(case['target_reply']),
       'OUTPUT_SCHEMA_JSON':schema,'SCHEMA_REPAIR_CONTEXT_JSON':None}
     messages=[{'role':'system','content':(ROOT/'templates/judge_system.md').read_text()},
