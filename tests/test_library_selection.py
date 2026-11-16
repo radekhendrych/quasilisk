@@ -223,7 +223,7 @@ class StaticLibraryAdmissionTests(unittest.TestCase):
                 payload
                 for payload in self.perturbator_scopes.values()
                 if payload["requested_model"]
-                == self.resources.config.perturbator.model
+                == self.resources.config.perturbator.primary().model
                 and payload["response_mode"] == "json_schema"
             )
         )

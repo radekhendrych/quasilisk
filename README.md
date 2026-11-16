@@ -158,16 +158,28 @@ rejected. Noninteger JSON numbers are parsed and normalized as exact decimals.
       }
     },
     "selector": {
-      "model": "provider/selector",
-      "fallback_model": "provider/selector-fallback",
-      "temperature": 0.2,
-      "max_output_tokens": 1800
+      "primary": {
+        "model": "provider/selector",
+        "temperature": 0.2,
+        "max_output_tokens": 1800
+      },
+      "fallback": {
+        "model": "provider/selector-fallback",
+        "temperature": 0.2,
+        "max_output_tokens": 1800
+      }
     },
     "perturbator": {
-      "model": "provider/perturbator",
-      "fallback_model": "provider/perturbator-fallback",
-      "temperature": 0.7,
-      "max_output_tokens": 1600
+      "primary": {
+        "model": "provider/perturbator",
+        "temperature": 0.7,
+        "max_output_tokens": 1600
+      },
+      "fallback": {
+        "model": "provider/perturbator-fallback",
+        "temperature": 0.7,
+        "max_output_tokens": 1600
+      }
     }
   },
   "seed": {

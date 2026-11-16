@@ -2033,6 +2033,7 @@ def summary_projection(
             "ceiling_usd": config["provider"]["max_cost_usd"],
             "charged_plus_reserved_usd": normalize_decimal(state.cost_liability_usd),
         }} if config.get("provider", {}).get("max_cost_usd") is not None else {}),
+        "scenario_preflights": dict(state.scenario_preflights),
         "headline": {
             "objective": qualification["objective_id"] or config.get("objective"),
             "objective_plugin_digest": qualification["objective_plugin_digest"],
@@ -2208,6 +2209,17 @@ def render_summary_markdown(summary: Mapping[str, Any]) -> str:
             )
             + " |"
         )
+    preflights = _as_mapping(summary.get("scenario_preflights"))
+    if preflights:
+        lines.extend(["", "## Source template preflight", "",
+                      "These checks reuse recorded parents. Rejection is template attrition, not target resistance.", "",
+                      "| Verification unit | Status | Selector calls | Fresh target calls | Reason |",
+                      "|---|---|---:|---:|---|"])
+        for unit_id, item in sorted(preflights.items()):
+            reason = next((step.get("reason") for step in item["steps"]
+                           if step["status"] not in {"applicable", "not_started"}), None)
+            lines.append("| " + " | ".join(_markdown_escape(value) for value in (
+                unit_id, item["status"], item["physical_selector_calls"], item["fresh_target_calls"], reason)) + " |")
     identity = _as_mapping(summary.get("role_identity_integrity"))
     lines.extend(
         [

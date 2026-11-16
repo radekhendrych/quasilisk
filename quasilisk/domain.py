@@ -1636,24 +1636,28 @@ STRATEGY_TARGET_KINDS = frozenset(
     }
 )
 
-MOVE_ACT_TO_ARGUMENT_MOVE: Mapping[str, str] = MappingProxyType(
-    {
-        "complete_opening": "complete_commitment",
-        "apply_opening": "apply_commitment",
-        "overcome_objection": "answer_objection",
-        "repair_grounded_gap": "answer_objection",
-        "resolve_incoherence_forward": "complete_commitment",
-    }
-)
+@dataclass(frozen=True, slots=True)
+class StrategyOperation:
+    act: str
+    purpose: str
+    argument_move: str
 
-RECOVERY_MOVE_ACT_TO_ARGUMENT_MOVES: Mapping[str, frozenset[str]] = MappingProxyType(
+
+# Sole operation-to-contract mapping. Models choose one operation; the engine
+# derives the three canonical fields, including recovery's genuine subchoice.
+STRATEGY_OPERATIONS: Mapping[str, StrategyOperation] = MappingProxyType(
     {
-        "recover_opening": frozenset(
-            {"establish_premise", "test_inference", "answer_objection"}
-        ),
+        "recover_premise": StrategyOperation("recover_opening", "recovery", "establish_premise"),
+        "recover_inference": StrategyOperation("recover_opening", "recovery", "test_inference"),
+        "recover_objection": StrategyOperation("recover_opening", "recovery", "answer_objection"),
+        "complete_opening": StrategyOperation("complete_opening", "completion", "complete_commitment"),
+        "apply_opening": StrategyOperation("apply_opening", "completion", "apply_commitment"),
+        "overcome_objection": StrategyOperation("overcome_objection", "repair", "answer_objection"),
+        "repair_grounded_gap": StrategyOperation("repair_grounded_gap", "repair", "answer_objection"),
+        "resolve_incoherence_forward": StrategyOperation("resolve_incoherence_forward", "completion", "complete_commitment"),
     }
 )
 
 STRATEGY_MOVE_ACTS = frozenset(
-    {*MOVE_ACT_TO_ARGUMENT_MOVE, *RECOVERY_MOVE_ACT_TO_ARGUMENT_MOVES}
+    operation.act for operation in STRATEGY_OPERATIONS.values()
 )

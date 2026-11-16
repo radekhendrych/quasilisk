@@ -1,4 +1,6 @@
 """Regressions for funded failure paths and evidence-driven multi-turn pursuit."""
+
+from foundation_support import strategy_wire_contract
 from dataclasses import replace
 from decimal import Decimal
 import json
@@ -93,7 +95,7 @@ class AdaptiveProvider(FinisherProvider):
             descriptors = {key: values[0] for key, values in data["descriptor_vocabulary"].items()}
             contract = self.stage_contract(stage, descriptors, data["evidence_catalog"])
             return response(request, {"items": [{"diagnosis": {"category": ("counterargument", "missing_commitment", "missing_application")[stage],
-                "summary": "Address the exact missing transition.", "evidence": [{"evidence_id": contract["basis"][0]["evidence_id"]}]}, "contract": contract,
+                "summary": "Address the exact missing transition.", "evidence": [{"evidence_id": contract["basis"][0]["evidence_id"]}]}, "contract": strategy_wire_contract(contract),
                 "applicability": {"requires": "The target currently owns the premise at this transition.", "excludes": "The premise is withdrawn."}}]})
         if purpose == "perturbator_proposal":
             self.requests.append(request)
@@ -108,7 +110,7 @@ class AdaptiveProvider(FinisherProvider):
             template = data["strategy_template"]
             stage = ("repair_grounded_gap", "complete_opening", "apply_opening").index(template["move"]["act"])
             contract = self.stage_contract(stage, template["move"]["descriptors"], data["evidence_catalog"])
-            return response(request, {"binding": "b0", "status": "applicable", "evidence": [{"evidence_id": contract["basis"][0]["evidence_id"]}], "reason": "The fresh target states this step's required evidence.", "contract": contract})
+            return response(request, {"binding": "b0", "status": "applicable", "evidence": [{"evidence_id": contract["basis"][0]["evidence_id"]}], "reason": "The fresh target states this step's required evidence.", "contract": strategy_wire_contract(contract)})
         return super().complete(request)
 
 
@@ -175,7 +177,7 @@ class FundedAdaptiveExperimentTests(unittest.TestCase):
         config["experiment"].update(conversation_rounds=3)
         plan = funded_work_plan(config, [{}] * 6, ())
         total = funded_call_limits(plan)
-        self.assertEqual(total, RoleCallVector(112, 448, 274, 136))
+        self.assertEqual(total, RoleCallVector(112, 448, 286, 136))
         remaining = total
         for kind, (count, maximum) in plan.items():
             for _ in range(count):

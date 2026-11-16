@@ -1,5 +1,7 @@
 """Exercise the real serial engine through owned commitment and fresh replay."""
 
+from foundation_support import strategy_wire_contract
+
 import json
 from pathlib import Path
 import signal
@@ -70,7 +72,7 @@ class FinisherProvider:
             data = request_data(request, "UNTRUSTED_SELECTOR_REQUEST_JSON")
             descriptors = {key: values[0] for key, values in data["descriptor_vocabulary"].items()}
             descriptors.update(argument_move="complete_commitment", application_scope="concrete_action")
-            text = canonical_json({"items": [{"diagnosis": {"category": "missing_application", "summary": "An owned abstract conclusion needs its governing decision.", "evidence": [{"evidence_id": "e0"}]}, "contract": self.contract(descriptors), "applicability": {"requires": "A fresh target owns the premise and inference.", "excludes": "The premise is conditional, absent, or withdrawn."}}]})
+            text = canonical_json({"items": [{"diagnosis": {"category": "missing_application", "summary": "An owned abstract conclusion needs its governing decision.", "evidence": [{"evidence_id": "e0"}]}, "contract": strategy_wire_contract(self.contract(descriptors)), "applicability": {"requires": "A fresh target owns the premise and inference.", "excludes": "The premise is conditional, absent, or withdrawn."}}]})
         elif purpose == "perturbator_proposal":
             data = request_data(request, "UNTRUSTED_PERTURBATOR_REQUEST_JSON")
             ordinary = data["mode"] == "ordinary"
@@ -90,7 +92,7 @@ class FinisherProvider:
             contract["move"].update(act=template["move"]["act"], blueprint=template["move"]["blueprint"])
             contract["move"]["target"]["kind"] = template["move"]["target_kind"]
             contract["preserve"] = [{**item, "evidence_id": "e0"} for item in template["preserve"]]
-            text = canonical_json({"binding": "b0", "status": "applicable", "evidence": [{"evidence_id": "e0"}], "reason": "The freshly generated target owns the required opening.", "contract": contract})
+            text = canonical_json({"binding": "b0", "status": "applicable", "evidence": [{"evidence_id": "e0"}], "reason": "The freshly generated target owns the required opening.", "contract": strategy_wire_contract(contract)})
         else:
             raise AssertionError("Unexpected work: " + purpose)
         return ProviderSuccess(EncodedBytes("utf8", text), text, None, request.requested_model, FinishStatus.COMPLETE, {"input_tokens": None, "output_tokens": None, "total_tokens": None}, 0, None, {"http_status": 200, "content_type": "application/json"})

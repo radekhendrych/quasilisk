@@ -93,10 +93,9 @@ def _portfolio(operator: str) -> dict[str, object]:
                     "evidence": [{"evidence_id": "e1"}],
                 },
                 "contract": {
-                    "purpose": purpose,
                     "basis": basis,
                     "move": {
-                        "act": operator,
+                        "operation": operator,
                         "target": {
                             "kind": "inference",
                             "evidence_id": "e0",
@@ -104,7 +103,6 @@ def _portfolio(operator: str) -> dict[str, object]:
                         },
                         "descriptors": {
                             "objective_route": "causal_fixity",
-                            "argument_move": argument_move,
                             "application_scope": (
                                 "reasoning_policy"
                                 if operator == "apply_opening"
@@ -167,7 +165,6 @@ def _recovery_portfolio() -> dict[str, object]:
     value = _portfolio("overcome_objection")
     item = value["items"][0]  # type: ignore[index]
     contract = item["contract"]  # type: ignore[index]
-    contract["purpose"] = "recovery"
     contract["basis"] = [
         {
             "use": "recovery_anchor",
@@ -176,7 +173,7 @@ def _recovery_portfolio() -> dict[str, object]:
         }
     ]
     contract["move"] = {
-        "act": "recover_opening",
+        "operation": "recover_inference",
         "target": {
             "kind": "inference",
             "evidence_id": "e1",
@@ -184,7 +181,6 @@ def _recovery_portfolio() -> dict[str, object]:
         },
         "descriptors": {
             "objective_route": "causal_fixity",
-            "argument_move": "test_inference",
             "application_scope": "abstract",
         },
         "blueprint": "Address the resistance and seek the first owned opening.",
@@ -206,6 +202,30 @@ def _recovery_portfolio() -> dict[str, object]:
 
 
 class StrategyPortfolioDirectionTests(unittest.TestCase):
+    def test_recovery_subchoices_derive_the_canonical_move(self):
+        for operation, move in (("recover_premise", "establish_premise"),
+                                ("recover_inference", "test_inference"),
+                                ("recover_objection", "answer_objection")):
+            value = _recovery_portfolio()
+            value["items"][0]["contract"]["move"]["operation"] = operation
+            contract = _parse(value, portfolio_intent=PortfolioIntent.RECOVER).items[0].contract
+            self.assertEqual(contract.purpose, "recovery")
+            self.assertEqual(contract.move.act, "recover_opening")
+            self.assertEqual(dict(contract.move.descriptors)["argument_move"], move)
+
+    def test_wire_contract_rejects_redundant_fields_even_when_consistent(self):
+        for field in ("purpose", "act", "argument_move"):
+            value = _portfolio("repair_grounded_gap")
+            contract = value["items"][0]["contract"]
+            if field == "purpose":
+                contract[field] = "repair"
+            elif field == "act":
+                contract["move"][field] = "repair_grounded_gap"
+            else:
+                contract["move"]["descriptors"][field] = "answer_objection"
+            with self.subTest(field=field), self.assertRaises(StrategyValidationError):
+                _parse(value)
+
     def test_unsettled_ownership_blocks_finishers_and_requires_condition_repair(self):
         for act in ("complete_opening", "apply_opening", "resolve_incoherence_forward", "overcome_objection"):
             with self.subTest(act=act), self.assertRaisesRegex(StrategyValidationError, "adopted opening"):
@@ -410,9 +430,7 @@ class StrategyPortfolioDirectionTests(unittest.TestCase):
     def test_recovery_portfolio_accepts_distinct_argument_moves(self) -> None:
         value = _recovery_portfolio()
         distinct = deepcopy(value["items"][0])  # type: ignore[index]
-        distinct["contract"]["move"]["descriptors"][  # type: ignore[index]
-            "argument_move"
-        ] = "answer_objection"
+        distinct["contract"]["move"]["operation"] = "recover_objection"
         distinct["contract"]["move"]["blueprint"] = (  # type: ignore[index]
             "Answer the cited objection and seek the first owned opening."
         )
@@ -487,7 +505,7 @@ class StrategyPortfolioDirectionTests(unittest.TestCase):
         ):
             with self.subTest(operator=operator):
                 value = _portfolio("complete_opening")
-                value["items"][0]["contract"]["move"]["act"] = operator  # type: ignore[index]
+                value["items"][0]["contract"]["move"]["operation"] = operator  # type: ignore[index]
                 with self.assertRaises(StrategyValidationError):
                     _parse(value)
 
@@ -502,7 +520,7 @@ class StrategyPortfolioDirectionTests(unittest.TestCase):
 
         value = _portfolio("resolve_incoherence_forward")
         value["items"][0]["contract"]["purpose"] = "repair"  # type: ignore[index]
-        with self.assertRaisesRegex(StrategyValidationError, "purpose disagree"):
+        with self.assertRaisesRegex(StrategyValidationError, "unknown=purpose"):
             _parse(value)
 
         wrong_diagnosis = _portfolio("resolve_incoherence_forward")

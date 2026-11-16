@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from .domain import (
     STRATEGY_MOVE_ACTS,
+    STRATEGY_OPERATIONS,
     OBJECTIVE_ID_RE,
     STRATEGY_PURPOSES,
     STRATEGY_TARGET_KINDS,
@@ -999,22 +1000,28 @@ def load_objective(
 
 
 def materialize_schema(schema: Mapping[str, Any], plugin: ObjectivePlugin) -> dict[str, Any]:
-    """Materialize only the two normative objective-dependent schema markers."""
+    """Materialize the canonical descriptor, diagnosis and operation markers."""
 
     import copy
 
     result = copy.deepcopy(dict(schema))
     defs = result.get("$defs")
-    if isinstance(defs, dict) and "DescriptorObject" in defs:
-        defs["DescriptorObject"] = {
+    for marker in ("DescriptorObject", "StrategyDescriptorObject"):
+        if not isinstance(defs, dict) or marker not in defs:
+            continue
+        names = [name for name in plugin.descriptor_names
+                 if marker == "DescriptorObject" or name != "argument_move"]
+        defs[marker] = {
             "type": "object",
             "properties": {
                 name: {"type": "string", "enum": list(plugin.descriptor_values[name])}
-                for name in plugin.descriptor_names
+                for name in names
             },
-            "required": list(plugin.descriptor_names),
+            "required": names,
             "additionalProperties": False,
         }
+    if isinstance(defs, dict) and "StrategyOperation" in defs:
+        defs["StrategyOperation"] = {"type": "string", "enum": list(STRATEGY_OPERATIONS)}
     if isinstance(defs, dict) and "DiagnosisCategory" in defs:
         defs["DiagnosisCategory"] = {
             "type": "string",

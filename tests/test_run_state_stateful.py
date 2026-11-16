@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from foundation_support import strategy_wire_contract
+
 from foundation_support import selector_applicability_payload
 
 from decimal import Decimal
@@ -944,7 +946,7 @@ class StatefulPortfolioProjectionTests(unittest.TestCase):
                             "summary": "Acceptance remains conditional.",
                             "evidence": [{"evidence_id": "e0"}],
                         },
-                        "contract": contract,
+                        "contract": strategy_wire_contract(contract),
                         "applicability": selector_applicability_payload(None),
                     }
                 ]

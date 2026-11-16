@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
@@ -433,7 +433,7 @@ def funded_work_plan(
         "screening": (entries + m * plan["exploration_batches"], screening_maximum()),
         "verification": (scenarios + plan["verification_blocks"], sum_root_maxima(
             stateful_root_maximum(depth) for _ in range(samples["verification"])
-        )),
+        ) + RoleCallVector(selector=4 * depth)),
         "strategy_development": (plan["strategy_experiments"], strategy_development_maximum(samples["strategy_qualification"])),
         "strategy_holdout": (plan["strategy_experiments"], strategy_holdout_maximum(samples["holdout"])),
     }
@@ -1078,7 +1078,9 @@ def _validate_root_plans(
         action_ids = _array(plan["ordered_action_ids"], "root-plan action IDs")
         if not all(isinstance(item, str) for item in action_ids) or len(set(action_ids)) != len(action_ids):
             raise SchedulerValidationError("root-plan action IDs must be unique strings")
-        prior: set[str] = set()
+        # Source checks are shared prerequisites outside the fresh sample
+        # roots. Verification validation pins the entry to the final check.
+        prior: set[str] = {item["action_id"] for item in unit.design.get("source_preflight", ())}
         prior_ordinal = -1
         for action_id in action_ids:
             _entity(action_id, "la", "root-plan action ID")
@@ -1292,6 +1294,7 @@ _DESIGN_FIELDS = {
         "planned_count",
         "measurement_cell",
         "root_plans",
+        "source_preflight",
     },
     "strategy_development": {
         "tag",
@@ -1731,7 +1734,24 @@ def _validate_verification(
         execution["execution_id"] for execution in unit.execution_slots
     ]:
         raise SchedulerValidationError("verification root plans must follow execution order")
+    preflight = _require_mapping_array(design["source_preflight"], "source preflight")
+    expected_count = (len(unit.proposal_slots) // count
+                      if subject_kind == "scenario_recipe" and unit.parent_unit_id is not None else 0)
+    if len(preflight) != expected_count:
+        raise SchedulerValidationError("source preflight must cover every derived recipe step")
     flattened: list[str] = []
+    for index, item in enumerate(preflight):
+        _exact_fields(item, {"action_id", "template_index", "parent_node_scientific_key"}, "source preflight step")
+        _digest(item["parent_node_scientific_key"], "source parent node")
+        if type(item["template_index"]) is not int or item["template_index"] != index:
+            raise SchedulerValidationError("source preflight template order is invalid")
+        previous = None if not flattened else flattened[-1]
+        _expect_action(action_by_id[item["action_id"]], role="selector", purpose="template_binding",
+                       owner=unit.unit_scientific_key,
+                       dependencies=() if previous is None else (previous,),
+                       guard=({"kind": "always"} if previous is None else
+                              {"kind": "if_template_applicable", "binding_action_id": previous}))
+        flattened.append(item["action_id"])
     for execution, root in zip(unit.execution_slots, roots, strict=True):
         if execution["arm"] != "none":
             raise SchedulerValidationError("verification execution arm must be none")
@@ -1794,6 +1814,11 @@ def _validate_verification(
             owner = execution["execution_scientific_key"]
             entry_panel = _panel_for_target(unit, root_actions[0]["action_id"])
             entry_ids = _panel_action_ids(entry_panel)
+            previous = None if not preflight else preflight[-1]["action_id"]
+            _expect_action(root_actions[0], role="target", purpose="target_sample", owner=owner,
+                           dependencies=() if previous is None else (previous,),
+                           guard=({"kind": "always"} if previous is None else
+                                  {"kind": "if_template_applicable", "binding_action_id": previous}))
             if root["ordered_action_ids"][:len(entry_ids)] != entry_ids:
                 raise SchedulerValidationError(
                     "scenario entry target panel is misplaced"
@@ -2997,6 +3022,7 @@ class RunState:
     role_identity_unverifiable_attempt_ids: Mapping[str, tuple[str, ...]]
     terminal_event: Mapping[str, Any] | None
     cost_liability_usd: Decimal = Decimal(0)
+    scenario_preflights: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     @property
     def completed_target_responses(self) -> int:
@@ -3696,23 +3722,15 @@ def _profile_for_binding(
             "selector_primary",
             "selector_fallback",
         }:
-            raw = models["selector"]
-            model = (
-                raw["model"]
-                if configured_slot == "selector_primary"
-                else raw["fallback_model"]
-            )
+            raw = models["selector"]["primary" if configured_slot == "selector_primary" else "fallback"]
+            model = raw["model"]
             system_prompt = ""
         elif role == Role.PERTURBATOR.value and configured_slot in {
             "perturbator_primary",
             "perturbator_fallback",
         }:
-            raw = models["perturbator"]
-            model = (
-                raw["model"]
-                if configured_slot == "perturbator_primary"
-                else raw["fallback_model"]
-            )
+            raw = models["perturbator"]["primary" if configured_slot == "perturbator_primary" else "fallback"]
+            model = raw["model"]
             system_prompt = ""
         else:
             raise KeyError(configured_slot)
@@ -7867,6 +7885,98 @@ def _validate_entry_verification_unit(
     return tuple(result)
 
 
+
+def scenario_preflight_source(
+    unit: WorkUnitView, action_id: str,
+    conversation_nodes: Mapping[str, ConversationNode],
+    target_observations: Mapping[str, TargetObservation],
+) -> tuple[int, TargetObservation] | None:
+    """Resolve one source binding to its recorded parent, never a new sample."""
+    record = next((item for item in unit.unit["design"].get("source_preflight", ())
+                   if item["action_id"] == action_id), None)
+    if record is None:
+        return None
+    nodes = [node for node in conversation_nodes.values()
+             if node.scientific_key == record["parent_node_scientific_key"]]
+    if len(nodes) != 1:
+        raise JournalCorrupt("source preflight lacks its exact parent node")
+    observations = [item for item in target_observations.values()
+                    if item.observation_id == nodes[0].target_observation_id]
+    if len(observations) != 1:
+        raise JournalCorrupt("source preflight lacks its recorded target response")
+    return record["template_index"], observations[0]
+
+
+def _derive_scenario_preflights(
+    *, run_id: str, manifest: Mapping[str, Any], objective: ObjectivePlugin | None,
+    work_units: Sequence[WorkUnitView], scenarios: Mapping[str, ScenarioRecipeView],
+    strategy_episodes: Mapping[str, StrategyEpisodeView],
+    logical_actions: Mapping[str, LogicalActionView],
+    target_results: Mapping[str, TargetResultView],
+    target_observations: Mapping[str, TargetObservation],
+    conversation_nodes: Mapping[str, ConversationNode],
+    response_schemas: Mapping[str, Mapping[str, Any]],
+) -> tuple[Mapping[str, Mapping[str, Any]], Mapping[str, bool]]:
+    summaries: dict[str, Mapping[str, Any]] = {}
+    completion: dict[str, bool] = {}
+    for unit in work_units:
+        if unit.unit["kind"] != "verification" or unit.unit["design"]["subject_kind"] != "scenario_recipe":
+            continue
+        scenario = scenarios.get(unit.unit["subject_scientific_key"])
+        if scenario is None:
+            raise JournalCorrupt("source preflight has no canonical scenario")
+        records = unit.unit["design"]["source_preflight"]
+        expected_keys = [strategy_episodes[item].generation_parent_node_scientific_key
+                         for item in scenario.source_step_episode_ids]
+        if [item["parent_node_scientific_key"] for item in records] != expected_keys:
+            raise JournalCorrupt("source preflight changed its source parent chain")
+        steps = []
+        status = "passed" if records else "not_required"
+        blocked = False
+        for record in records:
+            action = logical_actions[record["action_id"]]
+            if blocked:
+                if action.attempts:
+                    raise JournalCorrupt("source preflight continued after a rejected or unresolved step")
+                steps.append({**record, "status": "not_started", "reason": None})
+                continue
+            source = scenario_preflight_source(unit, action.action_id, conversation_nodes, target_observations)
+            if source is None or objective is None:
+                raise JournalCorrupt("source preflight lacks its frozen context")
+            index, observation = source
+            template = scenario.recipe.templates[index]
+            template_key, _ = _strategy_template_identity(run_id, manifest["scientific_scope_digest"], template)
+            binding_id = make_template_binding_item_id(unit.unit["unit_scientific_key"],
+                unit.unit["unit_scientific_key"], template_key, index)
+            binding = _parsed_structured_action(action, response_schemas,
+                lambda value: parse_template_binding(value, expected_binding_item_id=binding_id,
+                    template=template, descriptor_vocabulary=objective.descriptor_values,
+                    fresh_turn_text_by_ref={observation.scientific_key: observation.response}),
+                label="source template preflight")
+            step_status = "applicable" if binding is not None and binding.status == "applicable" else (
+                "inapplicable" if binding is not None else "unresolved")
+            steps.append({**record, "status": step_status,
+                          "reason": None if binding is None else binding.reason})
+            if step_status != "applicable":
+                blocked = True
+                # Ignore structurally valid but semantically invalid replies when
+                # replaying the existing bounded retry policy.
+                closed = binding is not None or _completion_action_closed(
+                    unit, action, logical_actions, target_results, response_schemas,
+                    {action.action_id: _NO_SEMANTIC_RESULT})
+                completion[unit.unit_id] = closed
+                status = "rejected" if binding is not None else ("unresolved" if closed else "pending")
+        fresh_actions = [logical_actions[action_id] for root in unit.unit["design"]["root_plans"]
+                         for action_id in root["ordered_action_ids"]]
+        if blocked and any(action.attempts for action in fresh_actions):
+            raise JournalCorrupt("fresh scenario work started without every strict source binding")
+        summaries[unit.unit_id] = {"status": status, "steps": steps,
+            "physical_selector_calls": sum(attempt.dispatch_event is not None for record in records
+                for attempt in logical_actions[record["action_id"]].attempts),
+            "fresh_target_calls": sum(attempt.dispatch_event is not None for action in fresh_actions
+                if action.slot["role"] == Role.TARGET.value for attempt in action.attempts)}
+    return MappingProxyType(summaries), MappingProxyType(completion)
+
 def _validate_scenario_verification_unit(
     *,
     run_id: str,
@@ -7893,6 +8003,7 @@ def _validate_scenario_verification_unit(
         "measurement_cell": descriptors_dict(recipe.measurement_cell),
         "root_blueprint": "fresh_anchor_scenario",
         "always_full_panel": True,
+        "source_parent_node_keys": [item["parent_node_scientific_key"] for item in design["source_preflight"]],
     }
     expected_unit_key = _qualification_unit_key(
         scenario.scientific_key, "verification", semantic
@@ -7942,7 +8053,7 @@ def _validate_scenario_verification_unit(
     node_by_observation = {
         node.target_observation_id: node for node in conversation_nodes.values()
     }
-    claimed_actions: set[str] = set()
+    claimed_actions: set[str] = {item["action_id"] for item in design["source_preflight"]}
     seen_roots: set[str] = set()
     result: list[SeedVerificationExecution] = []
     frozen_binding_key = dict(recipe.selector_scope_keys)["template_binding"]
@@ -13110,6 +13221,13 @@ def reduce_events(
         portfolio_rounds=portfolio_rounds,
         strategy_episodes=strategy_episodes,
     )
+    scenario_preflights, preflight_completion = _derive_scenario_preflights(
+        run_id=events[0]["run_id"], manifest=manifest, objective=objective,
+        work_units=work_views, scenarios=scenarios, strategy_episodes=strategy_episodes,
+        logical_actions=logical_actions, target_results=target_results,
+        target_observations=target_observations, conversation_nodes=conversation_nodes,
+        response_schemas=response_schemas,
+    )
     (
         entry_seed_qualifications,
         entry_seed_qualification_snapshots,
@@ -13197,7 +13315,7 @@ def reduce_events(
             work_unit_id: round_view.complete
             for work_unit_id, round_view in portfolio_rounds.items()
         }
-        | dict(strategy_qualification_completion),
+        | dict(strategy_qualification_completion) | dict(preflight_completion),
         portfolio_rounds=portfolio_rounds,
     )
     drift = bool(mismatch_attempt_ids)
@@ -13260,6 +13378,7 @@ def reduce_events(
         ),
         terminal_event=terminal_event,
         cost_liability_usd=reduce_cost_accounting(events, attempts, slots, manifest),
+        scenario_preflights=scenario_preflights,
     )
     validate_search_policy(state)
     return state

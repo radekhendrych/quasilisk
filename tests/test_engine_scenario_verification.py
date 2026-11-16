@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from decimal import Decimal
@@ -477,7 +478,9 @@ class ScenarioVerificationTests(unittest.TestCase):
             source_step_child_scientific_keys=(self._digest("scenario-child"),),
             source_unit_ids=(entity_id("wu", ["scenario-source"]),),
         )
-        state = SimpleNamespace(scenarios={scenario.scientific_key: view})
+        state = SimpleNamespace(scenarios={scenario.scientific_key: view}, strategy_episodes={
+            view.source_episode_id: SimpleNamespace(generation_parent_node_scientific_key=self._digest("source-parent"))
+        })
         _hydrate_scenarios(self.context, state)
         hydrated = self.context.scenarios[scenario.scientific_key]
         self.assertEqual(hydrated.recipe, scenario.recipe)
@@ -486,6 +489,26 @@ class ScenarioVerificationTests(unittest.TestCase):
         view.entry_prompt = "changed after reducer projection"
         with self.assertRaisesRegex(EngineError, "reducer ownership"):
             _hydrate_scenarios(self.context, state)
+
+    def test_source_checks_cover_all_steps_before_any_fresh_root(self):
+        scenario = replace(self._scenario(), origin="derived", parent_unit_id=entity_id("wu", ["source"]),
+                           source_parent_node_keys=(self._digest("parent-one"), self._digest("parent-two")))
+        unit = build_scenario_verification(self.context, scenario)
+        self.context.resources.authoritative_schemas.validate_work_unit(unit.to_dict())
+        original = build_scenario_verification(self.context, self._scenario())
+        self.assertEqual(validate_work_unit_maximum(unit), original.worst_case_calls + RoleCallVector(selector=8))
+        checks = unit.design["source_preflight"]
+        self.assertEqual(len(checks), 2)
+        self.assertEqual(checks[1]["template_index"], 1)
+        by_id = {item["action_id"]: item for item in unit.logical_action_slots}
+        self.assertEqual(by_id[checks[1]["action_id"]]["dependency_action_ids"], [checks[0]["action_id"]])
+        for root in unit.design["root_plans"]:
+            entry = by_id[root["ordered_action_ids"][0]]
+            self.assertEqual(entry["guard"], {"kind": "if_template_applicable", "binding_action_id": checks[-1]["action_id"]})
+        altered = deepcopy(unit.to_dict())
+        altered["logical_action_slots"][2]["guard"] = {"kind": "always"}
+        with self.assertRaises(SchedulerValidationError):
+            validate_work_unit_maximum(replace(unit, logical_action_slots=tuple(altered["logical_action_slots"])))
 
     def test_builder_freezes_every_ordered_step_and_exact_maximum(self) -> None:
         unit = build_scenario_verification(self.context, self._scenario())
@@ -605,7 +628,8 @@ class ScenarioVerificationTests(unittest.TestCase):
                 entity_id("ev", ["first-step-result"]), 2,
             ),
         }
-        state = SimpleNamespace(target_results=results, logical_actions=logical)
+        state = SimpleNamespace(target_results=results, logical_actions=logical,
+                                conversation_nodes={}, target_observations={})
         self.context.scenarios[scenario.scientific_key] = scenario
         request = _scenario_binding_request(
             self.context, state, view, logical[binding_ids[1]]

@@ -51,30 +51,58 @@
       "replacement": null
     },
     "selector": {
-      "model": "deepseek/deepseek-v4.1-flash-1017",
-      "fallback_model": "openai/gpt-6-luna-pro",
-      "temperature": null,
-      "max_output_tokens": 16384,
-      "max_context_tokens": 1050000,
-      "max_price": {
-        "prompt": 0.275,
-        "completion": 0.825,
-        "request": 0
+      "primary": {
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "temperature": null,
+        "max_output_tokens": 16384,
+        "max_context_tokens": 1048576,
+        "max_price": {
+          "prompt": 0.022,
+          "completion": 0.4,
+          "request": 0
+        },
+        "reasoning_effort": "medium",
+        "provider_only": "morph/fp8"
       },
-      "reasoning_effort": "medium"
+      "fallback": {
+        "model": "openai/gpt-6-luna-pro",
+        "temperature": null,
+        "max_output_tokens": 16384,
+        "max_context_tokens": 1050000,
+        "max_price": {
+          "prompt": 0.275,
+          "completion": 0.825,
+          "request": 0
+        },
+        "reasoning_effort": "medium"
+      }
     },
     "perturbator": {
-      "model": "deepseek/deepseek-v4.1-flash-1017",
-      "fallback_model": "openai/gpt-6-luna-pro",
-      "temperature": null,
-      "max_output_tokens": 16384,
-      "max_context_tokens": 1050000,
-      "max_price": {
-        "prompt": 0.275,
-        "completion": 0.825,
-        "request": 0
+      "primary": {
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "temperature": null,
+        "max_output_tokens": 16384,
+        "max_context_tokens": 1048576,
+        "max_price": {
+          "prompt": 0.022,
+          "completion": 0.4,
+          "request": 0
+        },
+        "reasoning_effort": "medium",
+        "provider_only": "morph/fp8"
       },
-      "reasoning_effort": "medium"
+      "fallback": {
+        "model": "openai/gpt-6-luna-pro",
+        "temperature": null,
+        "max_output_tokens": 16384,
+        "max_context_tokens": 1050000,
+        "max_price": {
+          "prompt": 0.275,
+          "completion": 0.825,
+          "request": 0
+        },
+        "reasoning_effort": "medium"
+      }
     }
   },
   "seed": {

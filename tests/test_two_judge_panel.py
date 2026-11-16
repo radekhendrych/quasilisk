@@ -147,7 +147,7 @@ class TwoJudgePanelTests(unittest.TestCase):
         config['provider']['max_cost_usd']=ceiling
         config['experiment'].update(exploration_batches=0,conversation_rounds=0,verification_blocks=0)
         profiles=[config['models']['target'],config['models']['judges']['primary'],
-                  *config['models']['judges']['secondaries'],config['models']['selector'],config['models']['perturbator']]
+                  *config['models']['judges']['secondaries'],*config['models']['selector'].values(),*config['models']['perturbator'].values()]
         for profile in profiles:
             profile.update(max_context_tokens=1000000,
                 max_price={'prompt':Decimal('.1'),'completion':Decimal('.5'),'request':0})

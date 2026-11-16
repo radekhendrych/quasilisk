@@ -20,9 +20,8 @@ from .domain import (
     CONTROL_SAFE_DIMENSIONS,
     DECISION_CONSTANTS,
     DomainError,
-    MOVE_ACT_TO_ARGUMENT_MOVE,
+    STRATEGY_OPERATIONS,
     PortfolioIntent,
-    RECOVERY_MOVE_ACT_TO_ARGUMENT_MOVES,
     OBJECTIVE_ID_RE,
     ProposalAssignment,
     ProposalSlot,
@@ -58,24 +57,9 @@ BASIS_USES = frozenset(
         "presentation_signal",
     }
 )
-PORTFOLIO_OPERATOR_PURPOSES: Mapping[str, str] = MappingProxyType(
-    {
-        "recover_opening": "recovery",
-        "complete_opening": "completion",
-        "apply_opening": "completion",
-        "overcome_objection": "repair",
-        "repair_grounded_gap": "repair",
-        "resolve_incoherence_forward": "completion",
-    }
-)
-
-
 def _allowed_argument_moves(act: str) -> frozenset[str]:
-    recovery = RECOVERY_MOVE_ACT_TO_ARGUMENT_MOVES.get(act)
-    if recovery is not None:
-        return recovery
-    ordinary = MOVE_ACT_TO_ARGUMENT_MOVE.get(act)
-    return frozenset() if ordinary is None else frozenset({ordinary})
+    return frozenset(operation.argument_move for operation in STRATEGY_OPERATIONS.values()
+                     if operation.act == act)
 
 
 CONCERN_REQUIRED_PORTFOLIO_OPERATORS = frozenset(
@@ -372,7 +356,7 @@ def materialize_bound_strategy_output(
     obj = _as_object(value, "bound strategy")
     _exact_fields(
         obj,
-        {"purpose", "basis", "move", "hypothesis", "preserve", "vary", "success"},
+        {"basis", "move", "hypothesis", "preserve", "vary", "success"},
         "bound strategy",
     )
     result = deepcopy(obj)
@@ -394,12 +378,24 @@ def materialize_bound_strategy_output(
         )
     result["basis"] = canonical_basis
     move = _as_object(obj["move"], "move")
+    _exact_fields(move, {"operation", "target", "descriptors", "blueprint"}, "move")
+    operation_name = move["operation"]
+    if not isinstance(operation_name, str) or operation_name not in STRATEGY_OPERATIONS:
+        raise StrategyValidationError("move.operation is not in the shared vocabulary")
+    operation = STRATEGY_OPERATIONS[operation_name]
+    descriptors = _as_object(move["descriptors"], "move.descriptors")
+    if "argument_move" in descriptors:
+        raise StrategyValidationError("argument_move is derived from move.operation")
+    result["purpose"] = operation.purpose
     target = _as_object(move.get("target"), "move.target")
     _exact_fields(target, {"kind", "evidence_id", "summary"}, "move.target")
     target_ref, _ = _materialize_evidence_alias(
         target["evidence_id"], evidence_by_alias, "move.target.evidence_id"
     )
     canonical_move = deepcopy(move)
+    del canonical_move["operation"]
+    canonical_move["act"] = operation.act
+    canonical_move["descriptors"] = {**descriptors, "argument_move": operation.argument_move}
     canonical_move["target"] = {
         "kind": target["kind"],
         "anchor_ref": target_ref,
@@ -771,7 +767,8 @@ def _validate_portfolio_contract(
     portfolio_intent: PortfolioIntent,
 ) -> None:
     operator = contract.move.act
-    expected_purpose = PORTFOLIO_OPERATOR_PURPOSES.get(operator)
+    expected_purpose = next((item.purpose for item in STRATEGY_OPERATIONS.values()
+                             if item.act == operator), None)
     if expected_purpose is None:
         raise StrategyValidationError("portfolio strategy operator is not permitted")
     if contract.purpose != expected_purpose:

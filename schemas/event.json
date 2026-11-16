@@ -773,52 +773,16 @@
     "FallbackModelProfile": {
       "type": "object",
       "properties": {
-        "model": {
-          "type": "string",
-          "minLength": 1
+        "primary": {
+          "$ref": "#/$defs/ModelProfile"
         },
-        "fallback_model": {
-          "type": "string",
-          "minLength": 1
-        },
-        "temperature": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$"
-        },
-        "max_output_tokens": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "max_context_tokens": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "reasoning_effort": {
-          "type": "string",
-          "enum": [
-            "none",
-            "minimal",
-            "low",
-            "medium",
-            "high"
-          ]
-        },
-        "provider_only": {
-          "type": "string",
-          "minLength": 1
-        },
-        "max_price": {
-          "$ref": "#/$defs/ModelPriceCeilings"
+        "fallback": {
+          "$ref": "#/$defs/ModelProfile"
         }
       },
       "required": [
-        "model",
-        "fallback_model",
-        "temperature",
-        "max_output_tokens"
+        "primary",
+        "fallback"
       ],
       "additionalProperties": false
     },

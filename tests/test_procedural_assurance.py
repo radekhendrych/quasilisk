@@ -141,7 +141,7 @@ class BudgetAndProgressTests(unittest.TestCase):
             unit = build_initial_observation(context, candidate)
             work = WorkCandidate(unit)
             plan = funded_work_plan(resources.config.to_dict(), resources.bootstrap_payloads, resources.seed_snapshot)
-            self.assertEqual(funded_call_limits(plan), RoleCallVector(70, 280, 254, 128))
+            self.assertEqual(funded_call_limits(plan), RoleCallVector(70, 280, 266, 128))
             total = unit.worst_case_calls
             self.assertIs(choose_next_work((work,), total, coverage_slots_committed=0, stateful_slots_committed=0), work)
             short = replace(total, judge=total.judge - 1)

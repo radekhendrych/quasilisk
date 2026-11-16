@@ -83,7 +83,6 @@ class SimplifiedSelectorEngineTests(unittest.TestCase):
                         "evidence": [{"evidence_id": "e0"}],
                     },
                     "contract": {
-                        "purpose": "repair",
                         "basis": [
                             {
                                 "use": "continuation_anchor",
@@ -97,7 +96,7 @@ class SimplifiedSelectorEngineTests(unittest.TestCase):
                             },
                         ],
                         "move": {
-                            "act": act,
+                            "operation": act,
                             "target": {
                                 "kind": "inference",
                                 "evidence_id": "e0",
@@ -105,7 +104,6 @@ class SimplifiedSelectorEngineTests(unittest.TestCase):
                             },
                             "descriptors": {
                                 "objective_route": "causal_fixity",
-                                "argument_move": "answer_objection",
                                 "application_scope": "abstract",
                             },
                             "blueprint": "Answer the cited objection while holding the opening fixed.",
