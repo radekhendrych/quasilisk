@@ -159,32 +159,20 @@ class JudgeProfiles:
 
 @dataclass(frozen=True, slots=True)
 class FallbackProfile:
-    model: str
-    fallback_model: str
-    temperature: str | None
-    max_output_tokens: int
-    reasoning_effort: str | None = None
-    provider_only: str | None = None
-    max_price: Mapping[str, str] | None = None
-    max_context_tokens: int | None = None
-
-    def __post_init__(self) -> None:
-        profile = self._profile(self.model)
-        object.__setattr__(self, "max_price", profile.max_price)
-
-    def _profile(self, model: str) -> ModelProfile:
-        return ModelProfile(model, self.temperature, self.max_output_tokens,
-            reasoning_effort=self.reasoning_effort, provider_only=self.provider_only,
-            max_price=self.max_price, max_context_tokens=self.max_context_tokens)
+    primary_profile: ModelProfile
+    fallback_profile: ModelProfile
 
     def primary(self) -> ModelProfile:
-        return self._profile(self.model)
+        return self.primary_profile
 
     def fallback(self) -> ModelProfile:
-        return self._profile(self.fallback_model)
+        return self.fallback_profile
 
     def to_dict(self) -> dict[str, Any]:
-        return {**self.primary().to_dict(include_system_prompt=False), "fallback_model": self.fallback_model}
+        return {
+            "primary": self.primary_profile.to_dict(include_system_prompt=False),
+            "fallback": self.fallback_profile.to_dict(include_system_prompt=False),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,12 +342,14 @@ def _parse_fallback_profile(
     frozen_resume: bool,
 ) -> FallbackProfile:
     obj = _expect_object(value, label)
-    fallback = _text(obj.get("fallback_model"), f"{label}.fallback_model")
-    profile = _parse_model_profile({key: value for key, value in obj.items() if key != "fallback_model"},
-                                  label, target=False, frozen_resume=frozen_resume)
-    if profile.model == fallback:
-        raise ConfigError(f"{label} fallback_model must differ from model")
-    return FallbackProfile(fallback_model=fallback, **profile.to_dict(include_system_prompt=False))
+    _closed(obj, {"primary", "fallback"}, label)
+    primary = _parse_model_profile(obj["primary"], f"{label}.primary",
+                                   target=False, frozen_resume=frozen_resume)
+    fallback = _parse_model_profile(obj["fallback"], f"{label}.fallback",
+                                    target=False, frozen_resume=frozen_resume)
+    if primary.model == fallback.model:
+        raise ConfigError(f"{label} fallback model must differ from primary model")
+    return FallbackProfile(primary, fallback)
 
 
 def _parse_provider(value: Any, repository_root: Path) -> ProviderConfig:
@@ -564,10 +554,10 @@ def load_config(
             if profile.max_price is None or profile.max_context_tokens is None:
                 raise ConfigError("a dollar cap requires frozen maximum prices and context limits for every model route")
     non_target_models = set(judge_ids) | {
-        selector.model,
-        selector.fallback_model,
-        perturbator.model,
-        perturbator.fallback_model,
+        selector.primary().model,
+        selector.fallback().model,
+        perturbator.primary().model,
+        perturbator.fallback().model,
     }
     if target.model in non_target_models:
         raise ConfigError("the target model cannot serve another configured role")

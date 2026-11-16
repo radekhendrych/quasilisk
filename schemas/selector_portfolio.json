@@ -17,12 +17,6 @@
   ],
   "additionalProperties": false,
   "$defs": {
-    "DescriptorObject": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false
-    },
     "BasisItem": {
       "type": "object",
       "properties": {
@@ -88,30 +82,22 @@
     "StrategyMove": {
       "type": "object",
       "properties": {
-        "act": {
-          "type": "string",
-          "enum": [
-            "recover_opening",
-            "complete_opening",
-            "apply_opening",
-            "overcome_objection",
-            "repair_grounded_gap",
-            "resolve_incoherence_forward"
-          ]
-        },
         "target": {
           "$ref": "#/$defs/StrategyTarget"
         },
         "descriptors": {
-          "$ref": "#/$defs/DescriptorObject"
+          "$ref": "#/$defs/StrategyDescriptorObject"
         },
         "blueprint": {
           "type": "string",
           "minLength": 1
+        },
+        "operation": {
+          "$ref": "#/$defs/StrategyOperation"
         }
       },
       "required": [
-        "act",
+        "operation",
         "target",
         "descriptors",
         "blueprint"
@@ -226,14 +212,6 @@
     "BoundStrategy": {
       "type": "object",
       "properties": {
-        "purpose": {
-          "type": "string",
-          "enum": [
-            "recovery",
-            "repair",
-            "completion"
-          ]
-        },
         "basis": {
           "type": "array",
           "items": {
@@ -267,7 +245,6 @@
         }
       },
       "required": [
-        "purpose",
         "basis",
         "move",
         "hypothesis",
@@ -356,6 +333,18 @@
         "applicability"
       ],
       "additionalProperties": false
+    },
+    "StrategyDescriptorObject": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "StrategyOperation": {
+      "type": "string",
+      "enum": [
+        "complete_opening"
+      ]
     }
   }
 }

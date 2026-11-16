@@ -57,16 +57,28 @@ class StrictConfigTests(unittest.TestCase):
                     },
                 },
                 "selector": {
-                    "model": "models/selector",
-                    "fallback_model": "models/selector-fallback",
-                    "temperature": Decimal("0.2"),
-                    "max_output_tokens": 64,
+                    "primary": {
+                        "model": "models/selector",
+                        "temperature": Decimal("0.2"),
+                        "max_output_tokens": 64,
+                    },
+                    "fallback": {
+                        "model": "models/selector-fallback",
+                        "temperature": Decimal("0.2"),
+                        "max_output_tokens": 64,
+                    },
                 },
                 "perturbator": {
-                    "model": "models/perturbator",
-                    "fallback_model": "models/perturbator-fallback",
-                    "temperature": Decimal("0.7"),
-                    "max_output_tokens": 64,
+                    "primary": {
+                        "model": "models/perturbator",
+                        "temperature": Decimal("0.7"),
+                        "max_output_tokens": 64,
+                    },
+                    "fallback": {
+                        "model": "models/perturbator-fallback",
+                        "temperature": Decimal("0.7"),
+                        "max_output_tokens": 64,
+                    },
                 },
             },
             "seed": {"library_directory": "seed-library", "bootstrap_limit": 1, "prompts_path": None},
@@ -157,10 +169,10 @@ class StrictConfigTests(unittest.TestCase):
         )
         variants.append(duplicate_judges)
         reused_target = deepcopy(self.config)
-        reused_target["models"]["selector"]["model"] = "models/target"
+        reused_target["models"]["selector"]["primary"]["model"] = "models/target"
         variants.append(reused_target)
         same_fallback = deepcopy(self.config)
-        same_fallback["models"]["perturbator"]["fallback_model"] = (
+        same_fallback["models"]["perturbator"]["fallback"]["model"] = (
             "models/perturbator"
         )
         variants.append(same_fallback)

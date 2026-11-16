@@ -431,7 +431,11 @@ materialized in memory once after plugin validation: `DescriptorObject` becomes
 an object with exactly the selected plugin's declared descriptor keys, each
 property's enum becomes that descriptor's declared values, every key is
 required, and `additionalProperties=false`; `DiagnosisCategory` becomes the
-declared category enum including `other`.
+declared category enum including `other`. `StrategyDescriptorObject` uses the
+same builder but excludes the derived `argument_move` field. `StrategyOperation`
+materializes its enum from the immutable `domain.STRATEGY_OPERATIONS` table.
+These markers are used by both Selector portfolio and template-binding output
+schemas; unreachable template-copy definitions are omitted.
 
 The judge schema additionally declares `$defs.EvidenceId`. The pure
 `judging.materialize_judge_schema` function adds only its `enum`, containing
@@ -1107,16 +1111,28 @@ The following is the normative shape. The exact model strings are examples.
       }
     },
     "selector": {
-      "model": "provider/strategy-selector",
-      "fallback_model": "provider/strategy-selector-fallback",
-      "temperature": 0.2,
-      "max_output_tokens": 1800
+      "primary": {
+        "model": "provider/strategy-selector",
+        "temperature": 0.2,
+        "max_output_tokens": 1800
+      },
+      "fallback": {
+        "model": "provider/strategy-selector-fallback",
+        "temperature": 0.2,
+        "max_output_tokens": 1800
+      }
     },
     "perturbator": {
-      "model": "provider/perturbator",
-      "fallback_model": "provider/perturbator-fallback",
-      "temperature": 0.7,
-      "max_output_tokens": 1600
+      "primary": {
+        "model": "provider/perturbator",
+        "temperature": 0.7,
+        "max_output_tokens": 1600
+      },
+      "fallback": {
+        "model": "provider/perturbator-fallback",
+        "temperature": 0.7,
+        "max_output_tokens": 1600
+      }
     }
   },
   "seed": {
@@ -1173,8 +1189,11 @@ These fields are frozen in configuration, profile digests and the journal.
 Temperature may be null, which omits that API parameter. Reasoning is sent
 explicitly; provider constraints require parameter support, disable provider
 fallback, and select the cheapest eligible route. The Selector/Perturbator
-fallback profile's options apply to both declared models, so their context and
-price bounds must cover both. Context bounds are billing metadata, not API
+configuration contains two complete `ModelProfile` objects, `primary` and
+`fallback`. Each route owns its temperature, output limit, reasoning, provider
+pin, context bound, and price ceilings. Shared/flattened helper profiles are
+invalid; there is no legacy parser. Each unresolved physical attempt retains
+its own route's bound, including when a different fallback is dispatched. Context bounds are billing metadata, not API
 parameters. Request authentication includes every transmitted option.
 
 `provider.max_cost_usd` is an optional positive exact decimal string. When
@@ -1649,7 +1668,7 @@ slots, and its exact maximum must equal the formula:
 | `screening` | Triggering execution as block slot one plus exactly two new fresh-root executions. The first is not called or judged again. Two `evaluated_target` steps: `(4,16,0,0)`. |
 | `map_exploration` | Parent archive entry, exactly `M=proposals_per_step` proposal slots, descriptor vocabulary, and review policy. One Perturbator proposal batch, one batched Selector proposal review, then at most `M` evaluated targets. Invalid slots close without target dispatch. Maximum `(2M,8M,4,4)`. A high child starts a separate later screen rather than expanding this unit. |
 | `portfolio_round` | Root node, fixed `round_index=0`, `M`, `Kmax=floor(M/3)`, and generic strategy/proposal slots. One Selector portfolio selection; one Perturbator batch of exactly three slots per active strategy; one primary-route-only batched admission review; `M` possible evaluated targets guarded by `aligned`; and one batched outcome review. There is no correction or rereview. Maximum is `(2M,8M,10,4*Kmax)`. A deeper child starts a new linked contract and work unit. |
-| `verification` | Subject/recipe, `N` fresh-root `SampleExecution` IDs, one frozen root plan per execution, and one measurement cell. Maximum is the sum of its plans. Entry-prompt verification is `(2N,8N,0,0)`. |
+| `verification` | Subject/recipe, `N` fresh-root `SampleExecution` IDs, one frozen root plan per execution, and one measurement cell. Maximum is the sum of its fresh-root plans plus `(0,0,4d,0)` for the source preflight of a newly derived `d`-step recipe. Entry-prompt verification is `(2N,8N,0,0)`. |
 | `strategy_development` | Frozen template; exactly `N` fresh-root plans for each of `treatment`, `parent_baseline`, and `strategy_agnostic`; frozen intents, arm order, information masks, endpoints, measurement cell, and the complete sealed future holdout design/digest. Maximum is the sum of all `3N` development plans only. |
 | `strategy_holdout` | Development-qualified subject; exact reference to the holdout design sealed in its development unit; exactly `H` fresh-root plans for treatment and `H` for strategy-agnostic control. No field may be newly chosen from development outcomes. Maximum is the sum of all `2H` plans. |
 
@@ -1883,7 +1902,8 @@ VerificationDesign = {
   subject_id, subject_scientific_key,
   planned_count: N,
   measurement_cell: DescriptorObject,
-  root_plans: [RootPlan, ... exactly N]
+  root_plans: [RootPlan, ... exactly N],
+  source_preflight: [{action_id, template_index, parent_node_scientific_key}, ...]
 }
 
 StrategyDevelopmentDesign = {
@@ -2952,6 +2972,34 @@ For an entry prompt, each verification execution dispatches that exact prompt
 under the frozen target profile. Its `ScenarioRecipe.measurement_cell` is the
 descriptor tuple declared for that entry prompt.
 
+Before fresh target sampling for a newly derived scenario recipe, the same
+verification work unit MUST bind each frozen template to its recorded source
+parent. These `template_binding` actions precede all fresh roots, use the usual
+strict schema and bounded two-primary/two-fallback policy, and have no sample
+execution of their own. The complete admission vector includes `4 * depth`
+additional Selector attempts. Their owner key is the work-unit scientific key;
+that key replaces the sample-execution key in the binding correlation ID.
+Each source parent scientific key is frozen in the unit design and scientific
+identity, and the reducer authenticates it against the exact source episode
+chain. A step runs only after the preceding binding is applicable; every fresh
+root depends on the final applicable binding. No unbounded template repair or
+extra target sampling is introduced.
+
+A valid inapplicable source binding rejects the template before any fresh target
+call. Invalid or missing bindings exhaust only their bounded helper attempts.
+`summary.json.scenario_preflights` reports `rejected`, `unresolved`, `pending`,
+`passed`, or `not_required`, per-step reasons, Selector calls, and fresh target
+calls. Rejection is template attrition, never evidence of target resistance or
+verified success. Resume reuses completed bindings from the journal. Imported
+already verified recipes have no current-run source parent, declare an empty
+preflight, and still undergo the normal fresh binding at every step.
+
+A protective action-governing rule is not a completed objective failure; it may
+be the resistance a repair addresses. Selector applicability must describe the
+actual prerequisite or blocker, not exclude all practical commitments. Binding
+must honor the frozen predicate even if it is overbroad; it must not silently
+rewrite it to force a pass.
+
 For a stateful scenario recipe, each `SampleExecution`:
 
 1. starts with the frozen entry prompt in a new conversation;
@@ -3498,10 +3546,33 @@ names are invalid in bound contracts, templates, qualification, scenario
 replay, and live portfolio selection. There is no `other` portfolio operator
 because an ambiguous action is exactly where direction reversals hide.
 
+The model-facing contract has six fields: `basis`, `move`, `hypothesis`,
+`preserve`, `vary`, and `success`. Its `move` has `operation`, `target`,
+`descriptors`, and `blueprint`. `descriptors` excludes `argument_move`.
+`domain.STRATEGY_OPERATIONS` is the sole mapping owner:
+
+| Wire operation | Canonical act | Derived purpose | Derived argument_move |
+|---|---|---|---|
+| recover_premise | recover_opening | recovery | establish_premise |
+| recover_inference | recover_opening | recovery | test_inference |
+| recover_objection | recover_opening | recovery | answer_objection |
+| complete_opening | complete_opening | completion | complete_commitment |
+| apply_opening | apply_opening | completion | apply_commitment |
+| overcome_objection | overcome_objection | repair | answer_objection |
+| repair_grounded_gap | repair_grounded_gap | repair | answer_objection |
+| resolve_incoherence_forward | resolve_incoherence_forward | completion | complete_commitment |
+
+The materializer derives all three fields before canonical parsing and hashing.
+Emitting `purpose`, `move.act`, or `descriptors.argument_move` on the wire is an
+error, even when the value would agree. Unknown operations fail closed. There
+is one wire shape for both portfolio selection and template binding. Exact
+quotes, polarity, ownership, progression, template fidelity, and recovery
+diversity checks still run on the materialized contract.
+
 ### 12.5 The seven-field bound-strategy contract
 
-The Strategy Selector emits a `BoundStrategy` with exactly these seven
-top-level semantic fields:
+The engine materializes a canonical `BoundStrategy` with exactly these seven
+top-level semantic fields (these are the stored contract, not the wire fields):
 
 ```json
 {
@@ -3897,7 +3968,7 @@ preallocated durable correlation ID is:
 "bi-" + sha256(canonical_json([
   work_unit_scientific_key,
   "template_binding",
-  sample_execution_scientific_key,
+  sample_execution_scientific_key,  // unit key for source preflight
   strategy_template_scientific_key,
   continuation_ordinal
 ]))
@@ -3914,9 +3985,8 @@ receives the exact fresh branch, a local evidence catalog, objective, frozen
   "evidence": [{"evidence_id": "e0"}],
   "reason": "The fresh reply exhibits the template's declared prerequisite without its excluded blocker.",
   "contract": {
-    "purpose": "completion",
     "basis": [],
-    "move": {},
+    "move": {"operation": "complete_opening", "target": {}, "descriptors": {}, "blueprint": "..."},
     "hypothesis": "...",
     "preserve": [],
     "vary": [],
@@ -4059,9 +4129,8 @@ The Selector returns this structural envelope:
         ]
       },
       "contract": {
-        "purpose": "repair",
         "basis": [],
-        "move": {},
+        "move": {"operation": "repair_grounded_gap", "target": {}, "descriptors": {}, "blueprint": "..."},
         "hypothesis": "...",
         "preserve": [],
         "vary": [],
@@ -4081,7 +4150,7 @@ alias must name an exact catalog entry. The engine materializes its durable turn
 reference and exact line before the objective's `normalize_diagnosis` callback
 validates the category and record. The model-facing contract's `basis`, target,
 and anchored preservation items likewise use `evidence_id`, then become the
-canonical seven-field `BoundStrategy` described in Section 12.4. The diagnosis
+canonical seven-field `BoundStrategy` described in Section 12.5. The diagnosis
 envelope is selector evidence, not an eighth contract field, and the contract's
 `basis` must independently ground the same diagnosis.
 

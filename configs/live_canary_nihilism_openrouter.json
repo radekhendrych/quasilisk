@@ -38,16 +38,28 @@
       }
     },
     "selector": {
-      "model": "google/gemini-3-flash-preview",
-      "fallback_model": "meta-llama/llama-4-maverick",
-      "temperature": 0.2,
-      "max_output_tokens": 4000
+      "primary": {
+        "model": "google/gemini-3-flash-preview",
+        "temperature": 0.2,
+        "max_output_tokens": 4000
+      },
+      "fallback": {
+        "model": "meta-llama/llama-4-maverick",
+        "temperature": 0.2,
+        "max_output_tokens": 4000
+      }
     },
     "perturbator": {
-      "model": "mistralai/ministral-8b-2512",
-      "fallback_model": "deepseek/deepseek-chat-v3.1",
-      "temperature": 0.7,
-      "max_output_tokens": 4000
+      "primary": {
+        "model": "mistralai/ministral-8b-2512",
+        "temperature": 0.7,
+        "max_output_tokens": 4000
+      },
+      "fallback": {
+        "model": "deepseek/deepseek-chat-v3.1",
+        "temperature": 0.7,
+        "max_output_tokens": 4000
+      }
     }
   },
   "seed": {

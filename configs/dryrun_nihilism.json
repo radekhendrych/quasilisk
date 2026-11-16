@@ -37,16 +37,28 @@
       }
     },
     "selector": {
-      "model": "scripted/selector-primary",
-      "fallback_model": "scripted/selector-fallback",
-      "temperature": 0.2,
-      "max_output_tokens": 1800
+      "primary": {
+        "model": "scripted/selector-primary",
+        "temperature": 0.2,
+        "max_output_tokens": 1800
+      },
+      "fallback": {
+        "model": "scripted/selector-fallback",
+        "temperature": 0.2,
+        "max_output_tokens": 1800
+      }
     },
     "perturbator": {
-      "model": "scripted/perturbator-primary",
-      "fallback_model": "scripted/perturbator-fallback",
-      "temperature": 0.7,
-      "max_output_tokens": 1600
+      "primary": {
+        "model": "scripted/perturbator-primary",
+        "temperature": 0.7,
+        "max_output_tokens": 1600
+      },
+      "fallback": {
+        "model": "scripted/perturbator-fallback",
+        "temperature": 0.7,
+        "max_output_tokens": 1600
+      }
     }
   },
   "seed": {

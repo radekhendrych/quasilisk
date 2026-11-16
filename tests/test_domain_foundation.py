@@ -11,7 +11,7 @@ from quasilisk.domain import (
     DECISION_CONSTANTS,
     DomainError,
     DuplicateKeyError,
-    MOVE_ACT_TO_ARGUMENT_MOVE,
+    STRATEGY_OPERATIONS,
     Role,
     RunTerminalReason,
     TERMINAL_EXIT_CODES,
@@ -90,7 +90,7 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             TERMINAL_EXIT_CODES[RunTerminalReason.COMPLETED_PLAN] = 5  # type: ignore[index]
         with self.assertRaises(TypeError):
-            MOVE_ACT_TO_ARGUMENT_MOVE["complete_opening"] = "other"  # type: ignore[index]
+            STRATEGY_OPERATIONS["complete_opening"] = "other"  # type: ignore[index]
 
     def test_digests_and_entity_ids_are_full_lowercase_sha256_values(self) -> None:
         digest = digest_json({"b": 2, "a": 1})

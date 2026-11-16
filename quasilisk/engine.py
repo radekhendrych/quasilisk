@@ -123,6 +123,7 @@ from .run_state import (
     reduce_events,
     reduce_provider_circuit,
     structured_output_exhausts_route,
+    scenario_preflight_source,
 )
 from .scheduler import (
     WorkCandidate,
@@ -303,6 +304,7 @@ class ScenarioPlan:
     source_episode_id: str | None = None
     source_child_scientific_key: str | None = None
     parent_unit_id: str | None = None
+    source_parent_node_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2230,6 +2232,7 @@ def build_verification(
         "planned_count": count,
         "measurement_cell": dict(candidate.descriptors),
         "root_plans": root_plans,
+        "source_preflight": [],
     }
     return WorkUnit(
         unit_id=unit_id,
@@ -2504,6 +2507,7 @@ def _scenario_root_graph(
     proposal_slots: Sequence[ProposalSlot],
     actions: list[dict[str, Any]],
     panels: list[dict[str, Any]],
+    preflight_action_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Append one plural, ordered, fresh-grounded scenario root.
 
@@ -2529,7 +2533,9 @@ def _scenario_root_graph(
         unit_scientific_key=unit_scientific_key,
         owner_position_scientific_key=execution_key,
         start_ordinal=len(actions),
-        target_guard={"kind": "always"},
+        target_dependencies=() if preflight_action_id is None else (preflight_action_id,),
+        target_guard=({"kind": "always"} if preflight_action_id is None else
+                      {"kind": "if_template_applicable", "binding_action_id": preflight_action_id}),
         always_full=True,
     )
     actions.extend(entry_slots)
@@ -2708,6 +2714,10 @@ def build_scenario_verification(
         "anchor" for _ in recipe.templates
     ):
         raise EngineError("scenario verification requires designated anchor steps")
+    source_keys = scenario.source_parent_node_keys
+    if ((scenario.origin == "derived" and len(source_keys) != len(recipe.templates))
+            or (scenario.origin == "imported" and source_keys)):
+        raise EngineError("scenario source preflight must match its exact source steps")
     count = context.config.samples.verification
     measurement_cell = descriptors_dict(recipe.measurement_cell)
     semantic = {
@@ -2718,6 +2728,7 @@ def build_scenario_verification(
         "measurement_cell": measurement_cell,
         "root_blueprint": "fresh_anchor_scenario",
         "always_full_panel": True,
+        "source_parent_node_keys": list(source_keys),
     }
     unit_key = _unit_key(
         scenario.scientific_key, "verification", 0, semantic
@@ -2729,6 +2740,21 @@ def build_scenario_verification(
     panels: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
     roots: list[dict[str, Any]] = []
+    preflight: list[dict[str, Any]] = []
+    for index, parent_key in enumerate(source_keys):
+        previous = None if not actions else actions[-1]["action_id"]
+        binding = _action_slot(
+            context=context, unit_scientific_key=unit_key,
+            owner_position_scientific_key=unit_key, ordinal=len(actions),
+            role=Role.SELECTOR, purpose=ActionPurpose.TEMPLATE_BINDING,
+            dependencies=() if previous is None else (previous,),
+            routes=_selector_bindings(context),
+            guard=({"kind": "always"} if previous is None else
+                   {"kind": "if_template_applicable", "binding_action_id": previous}),
+        )
+        actions.append(binding)
+        preflight.append({"action_id": binding["action_id"], "template_index": index,
+                          "parent_node_scientific_key": parent_key})
     for ordinal in range(count):
         root_slots = proposal_slots[ordinal * depth : (ordinal + 1) * depth]
         execution, root = _scenario_root_graph(
@@ -2738,6 +2764,7 @@ def build_scenario_verification(
             proposal_slots=root_slots,
             actions=actions,
             panels=panels,
+            preflight_action_id=None if not preflight else preflight[-1]["action_id"],
         )
         executions.append(execution)
         roots.append(root)
@@ -2749,10 +2776,11 @@ def build_scenario_verification(
         "planned_count": count,
         "measurement_cell": measurement_cell,
         "root_plans": roots,
+        "source_preflight": preflight,
     }
     expected = sum_root_maxima(
         adjust_panel_maximum(stateful_root_maximum(depth), context.config.judges.maximum_physical_attempts) for _ in range(count)
-    )
+    ) + RoleCallVector(selector=4 * len(source_keys))
     maximum = action_slot_maximum(actions)
     if maximum != expected:
         raise EngineError(
@@ -4593,14 +4621,21 @@ def _scenario_binding_result(
     context: RunContext, state: RunState, unit: Any, action: LogicalActionView
 ) -> SemanticResult:
     scenario = _scenario_for_unit(context, unit)
-    root, execution, _ = _scenario_root_context(unit, action)
-    step_index = _scenario_step_index(unit, root, action)
+    source = scenario_preflight_source(unit, action.action_id, state.conversation_nodes, state.target_observations)
+    if source is None:
+        root, execution, _ = _scenario_root_context(unit, action)
+        step_index = _scenario_step_index(unit, root, action)
+        owner_key = execution["execution_scientific_key"]
+        _, turn_ref, turn_text, _ = _scenario_fresh_branch(state, unit, action)
+    else:
+        step_index, observation = source
+        owner_key = unit.unit["unit_scientific_key"]
+        turn_ref, turn_text = observation.scientific_key, observation.response
     template = scenario.recipe.templates[step_index]
     template_key, _ = _strategy_template_identity(context, template)
-    _, turn_ref, turn_text, _ = _scenario_fresh_branch(state, unit, action)
     binding_id = make_template_binding_item_id(
         unit.unit["unit_scientific_key"],
-        execution["execution_scientific_key"],
+        owner_key,
         template_key,
         step_index,
     )
@@ -7040,11 +7075,16 @@ def _scenario_binding_request(
     context: RunContext, state: RunState, unit: Any, action: LogicalActionView
 ) -> Mapping[str, Any]:
     scenario = _scenario_for_unit(context, unit)
-    root, _, _ = _scenario_root_context(unit, action)
-    step_index = _scenario_step_index(unit, root, action)
-    conversation, turn_ref, turn_text, _ = _scenario_fresh_branch(
-        state, unit, action
-    )
+    source = scenario_preflight_source(unit, action.action_id, state.conversation_nodes, state.target_observations)
+    if source is None:
+        root, _, _ = _scenario_root_context(unit, action)
+        step_index = _scenario_step_index(unit, root, action)
+        conversation, turn_ref, turn_text, _ = _scenario_fresh_branch(state, unit, action)
+    else:
+        step_index, observation = source
+        conversation = [message.to_dict() for message in observation.messages]
+        conversation.append({"role": "assistant", "content": observation.response})
+        turn_ref, turn_text = observation.scientific_key, observation.response
     template = scenario.recipe.templates[step_index]
     return {
         "binding": "b0",
@@ -8952,6 +8992,10 @@ def _hydrate_scenarios(context: RunContext, state: RunState) -> None:
             source_episode_id=view.source_episode_id,
             source_child_scientific_key=view.source_child_scientific_key,
             parent_unit_id=view.parent_unit_id,
+            source_parent_node_keys=tuple(
+                state.strategy_episodes[episode_id].generation_parent_node_scientific_key
+                for episode_id in view.source_step_episode_ids
+            ),
         )
         incumbent = context.scenarios.get(candidate.scientific_key)
         if incumbent is not None:

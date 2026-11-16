@@ -1529,6 +1529,32 @@
             "$ref": "#/$defs/RootPlan"
           },
           "minItems": 1
+        },
+        "source_preflight": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "action_id": {
+                "type": "string",
+                "pattern": "^la-[0-9a-f]{64}$"
+              },
+              "template_index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "parent_node_scientific_key": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "action_id",
+              "template_index",
+              "parent_node_scientific_key"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -1538,7 +1564,8 @@
         "subject_scientific_key",
         "planned_count",
         "measurement_cell",
-        "root_plans"
+        "root_plans",
+        "source_preflight"
       ],
       "additionalProperties": false
     },

@@ -216,8 +216,30 @@
       ],
       "replacement": {"model":"qwen/qwen3.5-plus","temperature":0,"max_output_tokens":500}
     },
-    "selector": {"model":"openai/gpt-5.2-pro","fallback_model":"anthropic/claude-haiku-4.5","temperature":0.2,"max_output_tokens":1800},
-    "perturbator": {"model":"deepseek/deepseek-v4-flash","fallback_model":"mistral/mistral-large","temperature":0.7,"max_output_tokens":1600}
+    "selector": {
+  "primary": {
+    "model": "openai/gpt-5.2-pro",
+    "temperature": 0.2,
+    "max_output_tokens": 1800
+  },
+  "fallback": {
+    "model": "anthropic/claude-haiku-4.5",
+    "temperature": 0.2,
+    "max_output_tokens": 1800
+  }
+},
+    "perturbator": {
+  "primary": {
+    "model": "deepseek/deepseek-v4-flash",
+    "temperature": 0.7,
+    "max_output_tokens": 1600
+  },
+  "fallback": {
+    "model": "mistral/mistral-large",
+    "temperature": 0.7,
+    "max_output_tokens": 1600
+  }
+}
   },
   "seed": {"library_directory":"library/seeds","bootstrap_limit":6},
   "budgets": {"target_attempts":120,"judge_attempts":360,"selector_attempts":80,"perturbator_attempts":80},

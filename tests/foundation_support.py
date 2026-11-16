@@ -64,16 +64,28 @@ FOUNDATION_MODELS = {
         },
     },
     "selector": {
-        "model": "model/selector",
-        "fallback_model": "model/selector-fallback",
-        "temperature": "0",
-        "max_output_tokens": 32,
+        "primary": {
+            "model": "model/selector",
+            "temperature": "0",
+            "max_output_tokens": 32,
+        },
+        "fallback": {
+            "model": "model/selector-fallback",
+            "temperature": "0",
+            "max_output_tokens": 32,
+        },
     },
     "perturbator": {
-        "model": "model/perturbator",
-        "fallback_model": "model/perturbator-fallback",
-        "temperature": "0",
-        "max_output_tokens": 32,
+        "primary": {
+            "model": "model/perturbator",
+            "temperature": "0",
+            "max_output_tokens": 32,
+        },
+        "fallback": {
+            "model": "model/perturbator-fallback",
+            "temperature": "0",
+            "max_output_tokens": 32,
+        },
     },
 }
 
@@ -624,3 +636,14 @@ def selector_applicability_payload(candidate=None):
     if isinstance(candidate, dict) and isinstance(candidate.get("applicability"), dict):
         return {key: candidate["applicability"][key] for key in ("requires", "excludes")}
     return {"requires": "Fresh evidence for the declared source transition.", "excludes": "The declared source opening is absent or withdrawn."}
+
+
+def strategy_wire_contract(contract):
+    """Encode a canonical test contract in the single model-facing shape."""
+    from quasilisk.domain import STRATEGY_OPERATIONS
+    value = deepcopy(contract)
+    move = value["move"]
+    key = (move.pop("act"), value.pop("purpose"), move["descriptors"].pop("argument_move"))
+    move["operation"] = next(name for name, op in STRATEGY_OPERATIONS.items()
+                             if (op.act, op.purpose, op.argument_move) == key)
+    return value

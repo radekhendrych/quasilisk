@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from foundation_support import strategy_wire_contract
+
 from quasilisk.domain import JudgeProcedure
 
 from copy import deepcopy
@@ -376,6 +378,7 @@ class EngineStrategyQualificationTests(unittest.TestCase):
                 "success": self.template.success.to_dict(),
             },
         }
+        payload["contract"] = strategy_wire_contract(payload["contract"])
         unit = SimpleNamespace(
             unit={
                 "unit_scientific_key": unit_key,

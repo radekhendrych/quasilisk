@@ -376,12 +376,13 @@ class SchemaMaterializationTests(unittest.TestCase):
         raw = strict_json_loads((SCHEMA_ROOT / "selector_portfolio.json").read_bytes())
         raw_copy = strict_json_loads((SCHEMA_ROOT / "selector_portfolio.json").read_bytes())
         materialized = materialize_schema(raw, plugin)
-        descriptor = materialized["$defs"]["DescriptorObject"]
+        descriptor = materialized["$defs"]["StrategyDescriptorObject"]
         diagnosis = materialized["$defs"]["DiagnosisCategory"]
-        self.assertEqual(list(descriptor["properties"]), list(plugin.descriptor_names))
-        self.assertEqual(descriptor["required"], list(plugin.descriptor_names))
+        names = [name for name in plugin.descriptor_names if name != "argument_move"]
+        self.assertEqual(list(descriptor["properties"]), names)
+        self.assertEqual(descriptor["required"], names)
         self.assertFalse(descriptor["additionalProperties"])
-        for name in plugin.descriptor_names:
+        for name in names:
             self.assertEqual(
                 descriptor["properties"][name]["enum"],
                 list(plugin.descriptor_values[name]),

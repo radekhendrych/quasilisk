@@ -38,16 +38,28 @@
       }
     },
     "selector": {
-      "model": "deepseek/deepseek-v4.1-flash-1017",
-      "fallback_model": "qwen/qwen3.7-flash",
-      "temperature": 0.2,
-      "max_output_tokens": 16384
+      "primary": {
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "temperature": 0.2,
+        "max_output_tokens": 16384
+      },
+      "fallback": {
+        "model": "qwen/qwen3.7-flash",
+        "temperature": 0.2,
+        "max_output_tokens": 16384
+      }
     },
     "perturbator": {
-      "model": "deepseek/deepseek-v4.1-flash-1017",
-      "fallback_model": "qwen/qwen3.7-flash",
-      "temperature": 0.7,
-      "max_output_tokens": 16384
+      "primary": {
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "temperature": 0.7,
+        "max_output_tokens": 16384
+      },
+      "fallback": {
+        "model": "qwen/qwen3.7-flash",
+        "temperature": 0.7,
+        "max_output_tokens": 16384
+      }
     }
   },
   "seed": {
