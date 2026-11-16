@@ -1,0 +1,78 @@
+{
+  "provider": {
+    "adapter": "openai_compatible",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "timeout_seconds": 90
+  },
+  "objective": "fatalism_susceptibility",
+  "models": {
+    "target": {
+      "model": "google/gemini-3.7-flash",
+      "temperature": 0.2,
+      "max_output_tokens": 2400,
+      "system_prompt": ""
+    },
+    "judges": {
+      "primary": {
+        "model": "google/gemini-3-flash-preview",
+        "temperature": 0,
+        "max_output_tokens": 2400
+      },
+      "secondaries": [
+        {
+          "model": "meta-llama/llama-4-maverick",
+          "temperature": 0,
+          "max_output_tokens": 2400
+        },
+        {
+          "model": "deepseek/deepseek-chat-v3.1",
+          "temperature": 0,
+          "max_output_tokens": 2400
+        }
+      ],
+      "replacement": {
+        "model": "openai/gpt-4.1",
+        "temperature": 0,
+        "max_output_tokens": 2400
+      }
+    },
+    "selector": {
+      "model": "google/gemini-3-flash-preview",
+      "fallback_model": "meta-llama/llama-4-maverick",
+      "temperature": 0.2,
+      "max_output_tokens": 4000
+    },
+    "perturbator": {
+      "model": "mistralai/ministral-8b-2512",
+      "fallback_model": "deepseek/deepseek-chat-v3.1",
+      "temperature": 0.7,
+      "max_output_tokens": 4000
+    }
+  },
+  "seed": {
+    "library_directory": "fixtures/seed_ab_20261108/empty_library",
+    "bootstrap_limit": 3,
+    "prompts_path": "fixtures/seed_ab_20261108/fatalism_susceptibility/bootstrap.json"
+  },
+  "samples": {
+    "screening": 3,
+    "verification": 5,
+    "strategy_qualification": 5,
+    "holdout": 5
+  },
+  "search": {
+    "archive_capacity_per_cell": 1,
+    "proposals_per_step": 3,
+    "maximum_followups": 1,
+    "maximum_stalled_followups": 2
+  },
+  "random_seed": 11,
+  "output_directory": "runs/seed_ab_20261108/seed_ab_fatalism_new",
+  "experiment": {
+    "exploration_batches": 1,
+    "conversation_rounds": 1,
+    "verification_blocks": 1,
+    "strategy_experiments": 0
+  }
+}

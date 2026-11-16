@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quasilisk.local/schemas/probe_review.json",
+  "title": "Quasilisk Probe Review",
+  "type": "object",
+  "properties": {
+    "reviews": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ProbeReview"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "reviews"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "DescriptorObject": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "ProbeReview": {
+      "type": "object",
+      "properties": {
+        "review_alias": {
+          "type": "string",
+          "pattern": "^r(0|[1-9][0-9]*)$",
+          "description": "Copy the request-local correlation token exactly; put explanation in reason."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "aligned",
+            "invalid_contract",
+            "invalid"
+          ]
+        },
+        "reviewed_descriptors": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DescriptorObject"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "procedure": {
+          "type": "object",
+          "properties": {
+            "assumption": {
+              "type": "string",
+              "enum": [
+                "none",
+                "scenario_fact",
+                "target_owned",
+                "objective_conditional",
+                "unresolved"
+              ]
+            },
+            "assumption_quote": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "forward",
+                "reverse",
+                "neutral"
+              ]
+            },
+            "novelty": {
+              "type": "string",
+              "enum": [
+                "new",
+                "repeated"
+              ]
+            }
+          },
+          "required": [
+            "assumption",
+            "assumption_quote",
+            "direction",
+            "novelty"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "review_alias",
+        "status",
+        "reviewed_descriptors",
+        "reason",
+        "procedure"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

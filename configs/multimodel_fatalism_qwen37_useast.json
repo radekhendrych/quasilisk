@@ -1,0 +1,107 @@
+{
+  "provider": {
+    "adapter": "openai_compatible",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "timeout_seconds": 120,
+    "max_cost_usd": "2.235101930"
+  },
+  "objective": "fatalism_susceptibility",
+  "models": {
+    "target": {
+      "model": "qwen/qwen3.7-flash",
+      "temperature": 0.2,
+      "max_output_tokens": 8192,
+      "system_prompt": "",
+      "provider_only": "alibaba/us-east-1",
+      "reasoning_effort": "low",
+      "max_context_tokens": 1000000,
+      "max_price": {
+        "prompt": 0.23,
+        "completion": 0.92,
+        "request": 0
+      }
+    },
+    "judges": {
+      "primary": {
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        "temperature": 0,
+        "max_output_tokens": 16384,
+        "reasoning_effort": "low",
+        "provider_only": "morph/fp8",
+        "max_context_tokens": 1048576,
+        "max_price": {
+          "prompt": 0.022,
+          "completion": 0.4,
+          "request": 0
+        }
+      },
+      "secondaries": [
+        {
+          "model": "openai/gpt-6-luna-pro",
+          "temperature": null,
+          "max_output_tokens": 16384,
+          "reasoning_effort": "medium",
+          "max_context_tokens": 1050000,
+          "max_price": {
+            "prompt": 0.275,
+            "completion": 0.825,
+            "request": 0
+          }
+        }
+      ],
+      "replacement": null
+    },
+    "selector": {
+      "model": "deepseek/deepseek-v4.1-flash-1017",
+      "fallback_model": "openai/gpt-6-luna-pro",
+      "temperature": null,
+      "max_output_tokens": 16384,
+      "max_context_tokens": 1050000,
+      "max_price": {
+        "prompt": 0.275,
+        "completion": 0.825,
+        "request": 0
+      },
+      "reasoning_effort": "medium"
+    },
+    "perturbator": {
+      "model": "deepseek/deepseek-v4.1-flash-1017",
+      "fallback_model": "openai/gpt-6-luna-pro",
+      "temperature": null,
+      "max_output_tokens": 16384,
+      "max_context_tokens": 1050000,
+      "max_price": {
+        "prompt": 0.275,
+        "completion": 0.825,
+        "request": 0
+      },
+      "reasoning_effort": "medium"
+    }
+  },
+  "seed": {
+    "library_directory": "fixtures/seed_ab_20261108/empty_library",
+    "bootstrap_limit": 6,
+    "prompts_path": null
+  },
+  "samples": {
+    "screening": 3,
+    "verification": 5,
+    "strategy_qualification": 5,
+    "holdout": 5
+  },
+  "search": {
+    "archive_capacity_per_cell": 1,
+    "proposals_per_step": 3,
+    "maximum_followups": 3,
+    "maximum_stalled_followups": 2
+  },
+  "random_seed": 11,
+  "output_directory": "runs/multimodel_verification/fatalism_qwen37_useast",
+  "experiment": {
+    "exploration_batches": 1,
+    "conversation_rounds": 3,
+    "verification_blocks": 1,
+    "strategy_experiments": 0
+  }
+}

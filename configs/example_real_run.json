@@ -1,0 +1,78 @@
+{
+  "provider": {
+    "adapter": "openai_compatible",
+    "base_url": "https://example-provider.invalid/v1",
+    "api_key_env": "QUASILISK_API_KEY",
+    "timeout_seconds": 90
+  },
+  "objective": "fatalism_susceptibility",
+  "models": {
+    "target": {
+      "model": "provider/target",
+      "temperature": 0.2,
+      "max_output_tokens": 1600,
+      "system_prompt": ""
+    },
+    "judges": {
+      "primary": {
+        "model": "provider-a/judge-primary",
+        "temperature": 0,
+        "max_output_tokens": 500
+      },
+      "secondaries": [
+        {
+          "model": "provider-b/judge-secondary-a",
+          "temperature": 0,
+          "max_output_tokens": 500
+        },
+        {
+          "model": "provider-c/judge-secondary-b",
+          "temperature": 0,
+          "max_output_tokens": 500
+        }
+      ],
+      "replacement": {
+        "model": "provider-d/judge-replacement",
+        "temperature": 0,
+        "max_output_tokens": 500
+      }
+    },
+    "selector": {
+      "model": "provider/selector",
+      "fallback_model": "provider/selector-fallback",
+      "temperature": 0.2,
+      "max_output_tokens": 1800
+    },
+    "perturbator": {
+      "model": "provider/perturbator",
+      "fallback_model": "provider/perturbator-fallback",
+      "temperature": 0.7,
+      "max_output_tokens": 1600
+    }
+  },
+  "seed": {
+    "library_directory": "library/seeds",
+    "bootstrap_limit": 6,
+    "prompts_path": null
+  },
+  "samples": {
+    "screening": 3,
+    "verification": 5,
+    "strategy_qualification": 5,
+    "holdout": 5
+  },
+  "search": {
+    "archive_capacity_per_cell": 2,
+    "proposals_per_step": 3,
+    "maximum_followups": 3,
+    "maximum_stalled_followups": 2
+  },
+  "random_seed": 7,
+  "output_directory": "runs/example_real",
+  "experiment": {
+    "exploration_batches": 1,
+    "conversation_rounds": 1,
+    "verification_blocks": 1,
+    "strategy_experiments": 0
+  }
+}

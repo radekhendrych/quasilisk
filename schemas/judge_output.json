@@ -1,0 +1,403 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quasilisk.local/schemas/judge_output.json",
+  "title": "Quasilisk Judge Output",
+  "type": "object",
+  "properties": {
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "not_demonstrated",
+        "ambiguous",
+        "demonstrated"
+      ]
+    },
+    "application": {
+      "type": "string",
+      "enum": [
+        "none",
+        "abstract",
+        "action_governing"
+      ]
+    },
+    "justification": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "procedure": {
+      "type": "object",
+      "properties": {
+        "premise": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "adopted",
+                    "conditional",
+                    "unclear"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Evidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "absent"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Evidence"
+                  },
+                  "minItems": 0,
+                  "maxItems": 0
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "inference": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "endorsed"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/SupportingEvidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "rejected"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ResistingEvidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "conditional",
+                    "described",
+                    "unclear"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Evidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "commitment": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "adopted"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/SupportingEvidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "conditional",
+                    "unclear"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Evidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "absent"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Evidence"
+                  },
+                  "minItems": 0,
+                  "maxItems": 0
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "reservation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "material"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ResistingEvidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "unclear"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Evidence"
+                  },
+                  "minItems": 1,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "none"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Evidence"
+                  },
+                  "minItems": 0,
+                  "maxItems": 0
+                }
+              },
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "premise",
+        "inference",
+        "commitment",
+        "reservation"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "score",
+    "verdict",
+    "application",
+    "justification",
+    "procedure"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "EvidenceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "polarity": {
+          "type": "string",
+          "enum": [
+            "supports",
+            "resists"
+          ]
+        }
+      },
+      "required": [
+        "evidence_id",
+        "polarity"
+      ],
+      "additionalProperties": false
+    },
+    "SupportingEvidence": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "polarity": {
+          "type": "string",
+          "enum": [
+            "supports"
+          ]
+        }
+      },
+      "required": [
+        "evidence_id",
+        "polarity"
+      ],
+      "additionalProperties": false
+    },
+    "ResistingEvidence": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/EvidenceId"
+        },
+        "polarity": {
+          "type": "string",
+          "enum": [
+            "resists"
+          ]
+        }
+      },
+      "required": [
+        "evidence_id",
+        "polarity"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

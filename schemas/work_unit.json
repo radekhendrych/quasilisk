@@ -1,0 +1,1712 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quasilisk.local/schemas/work_unit.json",
+  "title": "Quasilisk Work Unit",
+  "type": "object",
+  "properties": {
+    "unit_id": {
+      "type": "string",
+      "pattern": "^wu-[0-9a-f]{64}$"
+    },
+    "unit_scientific_key": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "initial_observation",
+        "screening",
+        "map_exploration",
+        "portfolio_round",
+        "verification",
+        "strategy_development",
+        "strategy_holdout"
+      ]
+    },
+    "subject_id": {
+      "type": "string",
+      "pattern": "^(?:run|ev|iv|wu|la|pa|pc|to|ex|cr|cn|ma|pn|sb|ss|st|tp|rz|ep|sc|ae|sd|qf|rp|ps|ri|bi)-[0-9a-f]{64}$"
+    },
+    "subject_scientific_key": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "parent_unit_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^wu-[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policy_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "design": {
+      "$ref": "#/$defs/WorkUnitDesign"
+    },
+    "proposal_slots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ProposalSlot"
+      },
+      "minItems": 0
+    },
+    "execution_slots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ExecutionSlot"
+      },
+      "minItems": 0
+    },
+    "panel_plans": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PanelPlan"
+      },
+      "minItems": 0
+    },
+    "logical_action_slots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LogicalActionSlot"
+      },
+      "minItems": 1
+    },
+    "worst_case_calls": {
+      "$ref": "#/$defs/RoleCallVector"
+    }
+  },
+  "required": [
+    "unit_id",
+    "unit_scientific_key",
+    "kind",
+    "subject_id",
+    "subject_scientific_key",
+    "parent_unit_id",
+    "policy_digest",
+    "design",
+    "proposal_slots",
+    "execution_slots",
+    "panel_plans",
+    "logical_action_slots",
+    "worst_case_calls"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "initial_observation"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "design": {
+            "$ref": "#/$defs/InitialObservationDesign"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "screening"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "design": {
+            "$ref": "#/$defs/ScreeningDesign"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "map_exploration"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "design": {
+            "$ref": "#/$defs/MapExplorationDesign"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "portfolio_round"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "design": {
+            "$ref": "#/$defs/PortfolioRoundDesign"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "verification"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "design": {
+            "$ref": "#/$defs/VerificationDesign"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "strategy_development"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "design": {
+            "$ref": "#/$defs/StrategyDevelopmentDesign"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "strategy_holdout"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "design": {
+            "$ref": "#/$defs/StrategyHoldoutDesign"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ScientificKey": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "EntityId": {
+      "type": "string",
+      "pattern": "^(?:run|ev|iv|wu|la|pa|pc|to|ex|cr|cn|ma|pn|sb|ss|st|tp|rz|ep|sc|ae|sd|qf|rp|ps|ri|bi)-[0-9a-f]{64}$"
+    },
+    "DescriptorObject": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "VariationDimension": {
+      "type": "string",
+      "enum": [
+        "wording",
+        "tone_register",
+        "framing",
+        "structure",
+        "directness",
+        "specificity",
+        "example_analogy",
+        "premise_order",
+        "question_form",
+        "supporting_material"
+      ]
+    },
+    "RoleCallVector": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "judge": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selector": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "perturbator": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "target",
+        "judge",
+        "selector",
+        "perturbator"
+      ],
+      "additionalProperties": false
+    },
+    "ProposalSlot": {
+      "type": "object",
+      "properties": {
+        "slot_id": {
+          "type": "string",
+          "pattern": "^ps-[0-9a-f]{64}$"
+        },
+        "scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "global_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "slot_id",
+        "scientific_key",
+        "global_ordinal"
+      ],
+      "additionalProperties": false
+    },
+    "ProposalAssignment": {
+      "type": "object",
+      "properties": {
+        "proposal_slot_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "strategy_slot_scientific_key": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lane_ordinal": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "intent": {
+          "type": "string",
+          "enum": [
+            "coverage",
+            "anchor",
+            "close",
+            "divergent",
+            "explore",
+            "exploit"
+          ]
+        }
+      },
+      "required": [
+        "proposal_slot_scientific_key",
+        "strategy_slot_scientific_key",
+        "lane_ordinal",
+        "intent"
+      ],
+      "additionalProperties": false
+    },
+    "ExecutionSlot": {
+      "type": "object",
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "pattern": "^ex-[0-9a-f]{64}$"
+        },
+        "execution_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "arm": {
+          "type": "string",
+          "enum": [
+            "none",
+            "treatment",
+            "parent_baseline",
+            "strategy_agnostic"
+          ]
+        },
+        "root_plan_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^rp-[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "execution_id",
+        "execution_scientific_key",
+        "ordinal",
+        "arm",
+        "root_plan_id"
+      ],
+      "additionalProperties": false
+    },
+    "RoleRouteBinding": {
+      "type": "object",
+      "properties": {
+        "route_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "route_label": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "replacement",
+            "fallback"
+          ]
+        },
+        "configured_slot": {
+          "type": "string",
+          "enum": [
+            "target",
+            "primary",
+            "secondary_a",
+            "secondary_b",
+            "replacement",
+            "selector_primary",
+            "selector_fallback",
+            "perturbator_primary",
+            "perturbator_fallback"
+          ]
+        },
+        "requested_provider_route_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "requested_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generation_profile_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "maximum_attempts": {
+          "type": "integer",
+          "enum": [
+            1,
+            2
+          ]
+        }
+      },
+      "required": [
+        "route_key",
+        "route_label",
+        "configured_slot",
+        "requested_provider_route_key",
+        "requested_model",
+        "generation_profile_digest",
+        "maximum_attempts"
+      ],
+      "additionalProperties": false
+    },
+    "GuardAlways": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "always"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfActionUsable": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_action_usable"
+        },
+        "action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "action_id"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfTemplateApplicable": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_template_applicable"
+        },
+        "binding_action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "binding_action_id"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfStrategySlotBound": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_strategy_slot_bound"
+        },
+        "strategy_slot_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "strategy_slot_scientific_key"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfDispatchableProbe": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_dispatchable_probe"
+        },
+        "review_item_id": {
+          "type": "string",
+          "pattern": "^ri-[0-9a-f]{64}$"
+        },
+        "proposal_slot_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "allowed": {
+          "oneOf": [
+            {
+              "const": [
+                "valid"
+              ]
+            },
+            {
+              "const": [
+                "aligned"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "review_item_id",
+        "proposal_slot_scientific_key",
+        "allowed"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfRepairableProposalExists": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_repairable_proposal_exists"
+        },
+        "review_action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        },
+        "proposal_slot_scientific_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "statuses": {
+          "const": [
+            "invalid"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "review_action_id",
+        "proposal_slot_scientific_keys",
+        "statuses"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfAnyProposedItem": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_any_proposed_item"
+        },
+        "proposal_action_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^la-[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "proposal_action_ids"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfAnyCorrectiveProposal": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_any_corrective_proposal"
+        },
+        "proposal_action_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^la-[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "proposal_action_ids"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfAnyAlignedResponse": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_any_aligned_response"
+        },
+        "target_action_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^la-[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "target_action_ids"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfPanelTriggered": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_panel_triggered"
+        },
+        "panel_id": {
+          "type": "string",
+          "pattern": "^pn-[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "panel_id"
+      ],
+      "additionalProperties": false
+    },
+    "GuardIfPanelHasUnresolvedNormalMember": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_panel_has_unresolved_normal_member"
+        },
+        "panel_id": {
+          "type": "string",
+          "pattern": "^pn-[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "panel_id"
+      ],
+      "additionalProperties": false
+    },
+    "ActionGuard": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/GuardAlways"
+        },
+        {
+          "$ref": "#/$defs/GuardIfActionUsable"
+        },
+        {
+          "$ref": "#/$defs/GuardIfTemplateApplicable"
+        },
+        {
+          "$ref": "#/$defs/GuardIfStrategySlotBound"
+        },
+        {
+          "$ref": "#/$defs/GuardIfDispatchableProbe"
+        },
+        {
+          "$ref": "#/$defs/GuardIfRepairableProposalExists"
+        },
+        {
+          "$ref": "#/$defs/GuardIfAnyProposedItem"
+        },
+        {
+          "$ref": "#/$defs/GuardIfAnyCorrectiveProposal"
+        },
+        {
+          "$ref": "#/$defs/GuardIfAnyAlignedResponse"
+        },
+        {
+          "$ref": "#/$defs/GuardIfPanelTriggered"
+        },
+        {
+          "$ref": "#/$defs/GuardIfPanelHasUnresolvedNormalMember"
+        },
+        {
+          "$ref": "#/$defs/GuardIfPanelResolved"
+        }
+      ]
+    },
+    "LogicalActionSlot": {
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        },
+        "action_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "target",
+            "judge",
+            "selector",
+            "perturbator"
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "target_sample",
+            "judge_member",
+            "selector_portfolio",
+            "probe_review",
+            "template_binding",
+            "outcome_review",
+            "perturbator_proposal"
+          ]
+        },
+        "owner_position_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "dependency_action_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^la-[0-9a-f]{64}$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoleRouteBinding"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "maximum_physical_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "guard": {
+          "$ref": "#/$defs/ActionGuard"
+        }
+      },
+      "required": [
+        "action_id",
+        "action_scientific_key",
+        "ordinal",
+        "role",
+        "purpose",
+        "owner_position_scientific_key",
+        "dependency_action_ids",
+        "routes",
+        "maximum_physical_attempts",
+        "guard"
+      ],
+      "additionalProperties": false
+    },
+    "PrimaryPanelMember": {
+      "type": "object",
+      "properties": {
+        "logical_member_slot": {
+          "const": "primary"
+        },
+        "weight": {
+          "const": 3
+        },
+        "judge_action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        },
+        "judge_action_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "role_route_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "logical_member_slot",
+        "weight",
+        "judge_action_id",
+        "judge_action_scientific_key",
+        "role_route_key"
+      ],
+      "additionalProperties": false
+    },
+    "SecondaryAPanelMember": {
+      "type": "object",
+      "properties": {
+        "logical_member_slot": {
+          "const": "secondary_a"
+        },
+        "weight": {
+          "const": 2
+        },
+        "judge_action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        },
+        "judge_action_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "role_route_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "logical_member_slot",
+        "weight",
+        "judge_action_id",
+        "judge_action_scientific_key",
+        "role_route_key"
+      ],
+      "additionalProperties": false
+    },
+    "SecondaryBPanelMember": {
+      "type": "object",
+      "properties": {
+        "logical_member_slot": {
+          "const": "secondary_b"
+        },
+        "weight": {
+          "const": 2
+        },
+        "judge_action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        },
+        "judge_action_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "role_route_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "logical_member_slot",
+        "weight",
+        "judge_action_id",
+        "judge_action_scientific_key",
+        "role_route_key"
+      ],
+      "additionalProperties": false
+    },
+    "PanelReplacement": {
+      "type": "object",
+      "properties": {
+        "judge_action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        },
+        "judge_action_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "role_route_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "judge_action_id",
+        "judge_action_scientific_key",
+        "role_route_key"
+      ],
+      "additionalProperties": false
+    },
+    "PanelPlan": {
+      "type": "object",
+      "properties": {
+        "panel_id": {
+          "type": "string",
+          "pattern": "^pn-[0-9a-f]{64}$"
+        },
+        "panel_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "target_action_id": {
+          "type": "string",
+          "pattern": "^la-[0-9a-f]{64}$"
+        },
+        "trigger_policy": {
+          "type": "string",
+          "enum": [
+            "threshold_or_primary_failure",
+            "always_full"
+          ]
+        },
+        "normal_members": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/PrimaryPanelMember"
+            },
+            {
+              "$ref": "#/$defs/SecondaryAPanelMember"
+            },
+            {
+              "$ref": "#/$defs/SecondaryBPanelMember"
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 3
+        },
+        "replacement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelReplacement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "panel_id",
+        "panel_scientific_key",
+        "target_action_id",
+        "trigger_policy",
+        "normal_members",
+        "replacement"
+      ],
+      "additionalProperties": false
+    },
+    "RootPlan": {
+      "type": "object",
+      "properties": {
+        "root_plan_id": {
+          "type": "string",
+          "pattern": "^rp-[0-9a-f]{64}$"
+        },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^ex-[0-9a-f]{64}$"
+        },
+        "arm": {
+          "type": "string",
+          "enum": [
+            "none",
+            "treatment",
+            "parent_baseline",
+            "strategy_agnostic"
+          ]
+        },
+        "ordered_action_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^la-[0-9a-f]{64}$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "terminal_endpoint_action_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^la-[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "semantic_nonsuccess_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "inapplicable",
+              "nonprogress"
+            ]
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "root_plan_id",
+        "execution_id",
+        "arm",
+        "ordered_action_ids",
+        "terminal_endpoint_action_id",
+        "semantic_nonsuccess_reasons"
+      ],
+      "additionalProperties": false
+    },
+    "FutureRootSpec": {
+      "type": "object",
+      "properties": {
+        "root_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "arm_local_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "arm": {
+          "type": "string",
+          "enum": [
+            "treatment",
+            "strategy_agnostic"
+          ]
+        },
+        "realization_intent": {
+          "type": "string",
+          "enum": [
+            "anchor",
+            "close",
+            "divergent"
+          ]
+        },
+        "blueprint": {
+          "type": "string",
+          "enum": [
+            "treatment_qualification",
+            "strategy_agnostic_qualification"
+          ]
+        },
+        "semantic_nonsuccess_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "inapplicable",
+              "nonprogress"
+            ]
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "root_ordinal",
+        "arm_local_ordinal",
+        "arm",
+        "realization_intent",
+        "blueprint",
+        "semantic_nonsuccess_reasons"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "const": "treatment"
+              }
+            },
+            "required": [
+              "arm"
+            ]
+          },
+          "then": {
+            "properties": {
+              "blueprint": {
+                "const": "treatment_qualification"
+              },
+              "semantic_nonsuccess_reasons": {
+                "const": [
+                  "inapplicable"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "const": "strategy_agnostic"
+              }
+            },
+            "required": [
+              "arm"
+            ]
+          },
+          "then": {
+            "properties": {
+              "blueprint": {
+                "const": "strategy_agnostic_qualification"
+              },
+              "semantic_nonsuccess_reasons": {
+                "const": []
+              }
+            }
+          }
+        }
+      ]
+    },
+    "SealedHoldoutPlan": {
+      "type": "object",
+      "properties": {
+        "planned_count_per_arm": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "comparison_dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VariationDimension"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "future_roots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FutureRootSpec"
+          },
+          "minItems": 2
+        },
+        "interleaved_root_order": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "information_masks": {
+          "type": "object",
+          "properties": {
+            "treatment": {
+              "const": "bound_strategy_request"
+            },
+            "strategy_agnostic": {
+              "const": "response_aware_strategy_blind_request"
+            }
+          },
+          "required": [
+            "treatment",
+            "strategy_agnostic"
+          ],
+          "additionalProperties": false
+        },
+        "endpoint_rule": {
+          "const": "single_terminal_assessed_response"
+        },
+        "measurement_cell": {
+          "$ref": "#/$defs/DescriptorObject"
+        }
+      },
+      "required": [
+        "planned_count_per_arm",
+        "comparison_dimensions",
+        "future_roots",
+        "interleaved_root_order",
+        "information_masks",
+        "endpoint_rule",
+        "measurement_cell"
+      ],
+      "additionalProperties": false
+    },
+    "InitialObservationDesign": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "initial_observation"
+        },
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^pc-[0-9a-f]{64}$"
+        },
+        "candidate_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^ex-[0-9a-f]{64}$"
+        },
+        "execution_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "panel_policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "tag",
+        "candidate_id",
+        "candidate_scientific_key",
+        "execution_id",
+        "execution_scientific_key",
+        "panel_policy_digest"
+      ],
+      "additionalProperties": false
+    },
+    "ScreeningDesign": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "screening"
+        },
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^pc-[0-9a-f]{64}$"
+        },
+        "candidate_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "block_id": {
+          "type": "string",
+          "pattern": "^sb-[0-9a-f]{64}$"
+        },
+        "triggering_execution_id": {
+          "type": "string",
+          "pattern": "^ex-[0-9a-f]{64}$"
+        },
+        "new_execution_ids": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string",
+              "pattern": "^ex-[0-9a-f]{64}$"
+            },
+            {
+              "type": "string",
+              "pattern": "^ex-[0-9a-f]{64}$"
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "panel_policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "tag",
+        "candidate_id",
+        "candidate_scientific_key",
+        "block_id",
+        "triggering_execution_id",
+        "new_execution_ids",
+        "panel_policy_digest"
+      ],
+      "additionalProperties": false
+    },
+    "MapExplorationDesign": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "map_exploration"
+        },
+        "parent_archive_entry_id": {
+          "type": "string",
+          "pattern": "^ae-[0-9a-f]{64}$"
+        },
+        "parent_archive_entry_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "proposal_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "under_covered_cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DescriptorObject"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "allowed_dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VariationDimension"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "probe_review_scope_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "tag",
+        "parent_archive_entry_id",
+        "parent_archive_entry_scientific_key",
+        "proposal_count",
+        "under_covered_cells",
+        "allowed_dimensions",
+        "probe_review_scope_key"
+      ],
+      "additionalProperties": false
+    },
+    "StrategySlot": {
+      "type": "object",
+      "properties": {
+        "entity_id": {
+          "type": "string",
+          "pattern": "^ss-[0-9a-f]{64}$"
+        },
+        "scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "entity_id",
+        "scientific_key",
+        "ordinal"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewScopeKeys": {
+      "type": "object",
+      "properties": {
+        "probe_review": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "outcome_review": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "probe_review",
+        "outcome_review"
+      ],
+      "additionalProperties": false
+    },
+    "PortfolioRoundDesign": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "portfolio_round"
+        },
+        "portfolio_intent": {
+          "type": "string",
+          "enum": [
+            "recover",
+            "advance"
+          ]
+        },
+        "conversation_root_id": {
+          "type": "string",
+          "pattern": "^cr-[0-9a-f]{64}$"
+        },
+        "generation_parent_node_id": {
+          "type": "string",
+          "pattern": "^cn-[0-9a-f]{64}$"
+        },
+        "generation_parent_node_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "round_index": {
+          "const": 0
+        },
+        "proposal_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maximum_strategy_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "strategy_slots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StrategySlot"
+          },
+          "minItems": 1
+        },
+        "active_strategy_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^st-[0-9a-f]{64}$"
+          },
+          "maxItems": 0,
+          "uniqueItems": true
+        },
+        "frozen_assignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposalAssignment"
+          },
+          "maxItems": 0,
+          "uniqueItems": true
+        },
+        "review_scope_keys": {
+          "$ref": "#/$defs/ReviewScopeKeys"
+        }
+      },
+      "required": [
+        "tag",
+        "portfolio_intent",
+        "conversation_root_id",
+        "generation_parent_node_id",
+        "generation_parent_node_scientific_key",
+        "round_index",
+        "proposal_count",
+        "maximum_strategy_count",
+        "strategy_slots",
+        "active_strategy_ids",
+        "frozen_assignments",
+        "review_scope_keys"
+      ],
+      "additionalProperties": false
+    },
+    "VerificationDesign": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "verification"
+        },
+        "subject_kind": {
+          "type": "string",
+          "enum": [
+            "entry_prompt",
+            "scenario_recipe"
+          ]
+        },
+        "subject_id": {
+          "type": "string",
+          "pattern": "^(?:run|ev|iv|wu|la|pa|pc|to|ex|cr|cn|ma|pn|sb|ss|st|tp|rz|ep|sc|ae|sd|qf|rp|ps|ri|bi)-[0-9a-f]{64}$"
+        },
+        "subject_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "planned_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "measurement_cell": {
+          "$ref": "#/$defs/DescriptorObject"
+        },
+        "root_plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RootPlan"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "tag",
+        "subject_kind",
+        "subject_id",
+        "subject_scientific_key",
+        "planned_count",
+        "measurement_cell",
+        "root_plans"
+      ],
+      "additionalProperties": false
+    },
+    "StrategyDevelopmentDesign": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "strategy_development"
+        },
+        "strategy_template_id": {
+          "type": "string",
+          "pattern": "^tp-[0-9a-f]{64}$"
+        },
+        "strategy_template_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "planned_count_per_arm": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "comparison_dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VariationDimension"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "realization_intent_assignment": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "anchor",
+              "close",
+              "divergent"
+            ]
+          },
+          "minItems": 1
+        },
+        "interleaved_root_order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^rp-[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "root_plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RootPlan"
+          },
+          "minItems": 1
+        },
+        "sealed_holdout_plan": {
+          "$ref": "#/$defs/SealedHoldoutPlan"
+        },
+        "sealed_holdout_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "measurement_cell": {
+          "$ref": "#/$defs/DescriptorObject"
+        }
+      },
+      "required": [
+        "tag",
+        "strategy_template_id",
+        "strategy_template_scientific_key",
+        "planned_count_per_arm",
+        "comparison_dimensions",
+        "realization_intent_assignment",
+        "interleaved_root_order",
+        "root_plans",
+        "sealed_holdout_plan",
+        "sealed_holdout_digest",
+        "measurement_cell"
+      ],
+      "additionalProperties": false
+    },
+    "StrategyHoldoutDesign": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "strategy_holdout"
+        },
+        "strategy_template_id": {
+          "type": "string",
+          "pattern": "^tp-[0-9a-f]{64}$"
+        },
+        "strategy_template_scientific_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source_development_unit_id": {
+          "type": "string",
+          "pattern": "^wu-[0-9a-f]{64}$"
+        },
+        "source_sealed_holdout_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "sealed_holdout_plan": {
+          "$ref": "#/$defs/SealedHoldoutPlan"
+        },
+        "root_plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RootPlan"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "tag",
+        "strategy_template_id",
+        "strategy_template_scientific_key",
+        "source_development_unit_id",
+        "source_sealed_holdout_digest",
+        "sealed_holdout_plan",
+        "root_plans"
+      ],
+      "additionalProperties": false
+    },
+    "WorkUnitDesign": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/InitialObservationDesign"
+        },
+        {
+          "$ref": "#/$defs/ScreeningDesign"
+        },
+        {
+          "$ref": "#/$defs/MapExplorationDesign"
+        },
+        {
+          "$ref": "#/$defs/PortfolioRoundDesign"
+        },
+        {
+          "$ref": "#/$defs/VerificationDesign"
+        },
+        {
+          "$ref": "#/$defs/StrategyDevelopmentDesign"
+        },
+        {
+          "$ref": "#/$defs/StrategyHoldoutDesign"
+        }
+      ]
+    },
+    "GuardIfPanelResolved": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "if_panel_resolved"
+        },
+        "panel_id": {
+          "type": "string",
+          "pattern": "^pn-[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "kind",
+        "panel_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

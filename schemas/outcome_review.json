@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quasilisk.local/schemas/outcome_review.json",
+  "title": "Quasilisk Strategy Outcome Review",
+  "type": "object",
+  "properties": {
+    "reviews": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OutcomeReview"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "reviews"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "OutcomeReview": {
+      "type": "object",
+      "properties": {
+        "review_alias": {
+          "type": "string",
+          "pattern": "^r(0|[1-9][0-9]*)$",
+          "description": "Copy the request-local correlation token exactly; put explanation in justification."
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "supports",
+            "falsifies",
+            "indeterminate"
+          ]
+        },
+        "response_state": {
+          "type": "string",
+          "enum": [
+            "engaged",
+            "refusal",
+            "nonanswer"
+          ]
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "review_alias",
+        "result",
+        "response_state",
+        "justification"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

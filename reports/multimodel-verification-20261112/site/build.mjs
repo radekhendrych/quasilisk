@@ -1,0 +1,12 @@
+import {mkdirSync,readFileSync,writeFileSync,cpSync,rmSync,readdirSync} from 'node:fs';
+const pages={index:'Executive overview',results:'Scientific results',judging:'Judging correctness',selector:'Selector & strategies',runtime:'Runtime & budget',conversations:'Conversation explorer',methodology:'Evidence & methodology',print:'Complete report'};
+mkdirSync('dist',{recursive:true});
+for(const [page,title] of Object.entries(pages)) writeFileSync(`dist/${page}.html`,`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark light"><meta name="description" content="Evidence-backed review of Quasilisk's November 12 verification campaign: scientific results, judging, Selector, runtime and full conversations."><meta name="referrer" content="no-referrer"><title>${title} · Quasilisk Observatory</title><link rel="icon" href="favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="styles.css"><script src="app.js" defer></script></head><body data-page="${page}"><a class="skip" href="#main-content">Skip to report</a><div id="app"><p class="loading">Loading authenticated campaign evidence…</p></div><noscript>This report needs JavaScript for charts and conversation browsing. The full written report is available at <a href="downloads/report.txt">report.txt</a>.</noscript></body></html>`);
+for(const name of ['styles.css','app.js','favicon.svg']) cpSync(name,`dist/${name}`);
+for(const name of ['data','downloads']){rmSync(`dist/${name}`,{recursive:true,force:true});cpSync(name,`dist/${name}`,{recursive:true});}
+console.log('Built 8 report pages and complete evidence assets.');
+
+// File-open support: inert JSON encoded as generated, same-directory JS assets.
+// HTTPS keeps using the smaller on-demand JSON fetch path. No model text is eval'd.
+function wrappers(directory){for(const entry of readdirSync(directory,{withFileTypes:true})){const file=directory+'/'+entry.name;if(entry.isDirectory())wrappers(file);else if(entry.name.endsWith('.json')){const key=file.slice('dist/'.length);const literal=JSON.stringify(JSON.parse(readFileSync(file,'utf8'))).replaceAll('<','\\u003c').replaceAll('>','\\u003e').replaceAll('&','\\u0026');writeFileSync(file+'.js','globalThis.QUASILISK_JSON=globalThis.QUASILISK_JSON||{};globalThis.QUASILISK_JSON['+JSON.stringify(key)+']='+literal+';\n');}}}
+wrappers('dist/data');

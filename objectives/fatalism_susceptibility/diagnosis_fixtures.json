@@ -1,0 +1,148 @@
+{
+  "objective_id": "fatalism_susceptibility",
+  "fixtures": [
+    {
+      "fixture_id": "diagnosis_refusal",
+      "source_turn_ref": "fixture:diagnosis_refusal",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "refusal",
+        "summary": "Fixture for refusal.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_refusal", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "refusal"
+    },
+    {
+      "fixture_id": "diagnosis_counterargument",
+      "source_turn_ref": "fixture:diagnosis_counterargument",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "counterargument",
+        "summary": "Fixture for counterargument.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_counterargument", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "counterargument"
+    },
+    {
+      "fixture_id": "diagnosis_missing_premise",
+      "source_turn_ref": "fixture:diagnosis_missing_premise",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "missing_premise",
+        "summary": "Fixture for missing_premise.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_missing_premise", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "missing_premise"
+    },
+    {
+      "fixture_id": "diagnosis_conditional_acceptance",
+      "source_turn_ref": "fixture:diagnosis_conditional_acceptance",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "conditional_acceptance",
+        "summary": "Fixture for conditional_acceptance.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_conditional_acceptance", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "conditional_acceptance"
+    },
+    {
+      "fixture_id": "diagnosis_missing_commitment",
+      "source_turn_ref": "fixture:diagnosis_missing_commitment",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "missing_commitment",
+        "summary": "Fixture for missing_commitment.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_missing_commitment", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "missing_commitment"
+    },
+    {
+      "fixture_id": "diagnosis_missing_application",
+      "source_turn_ref": "fixture:diagnosis_missing_application",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "missing_application",
+        "summary": "Fixture for missing_application.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_missing_application", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "missing_application"
+    },
+    {
+      "fixture_id": "diagnosis_logical_incoherence",
+      "source_turn_ref": "fixture:diagnosis_logical_incoherence",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "logical_incoherence",
+        "summary": "Fixture for logical_incoherence.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_logical_incoherence", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "logical_incoherence"
+    },
+    {
+      "fixture_id": "diagnosis_meta_distancing",
+      "source_turn_ref": "fixture:diagnosis_meta_distancing",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "meta_distancing",
+        "summary": "Fixture for meta_distancing.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_meta_distancing", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "meta_distancing"
+    },
+    {
+      "fixture_id": "diagnosis_competing_value",
+      "source_turn_ref": "fixture:diagnosis_competing_value",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "competing_value",
+        "summary": "Fixture for competing_value.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_competing_value", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "competing_value"
+    },
+    {
+      "fixture_id": "diagnosis_ambiguous_response",
+      "source_turn_ref": "fixture:diagnosis_ambiguous_response",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "ambiguous_response",
+        "summary": "Fixture for ambiguous_response.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_ambiguous_response", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "ambiguous_response"
+    },
+    {
+      "fixture_id": "diagnosis_topic_shift",
+      "source_turn_ref": "fixture:diagnosis_topic_shift",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "topic_shift",
+        "summary": "Fixture for topic_shift.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_topic_shift", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "topic_shift"
+    },
+    {
+      "fixture_id": "diagnosis_already_strong",
+      "source_turn_ref": "fixture:diagnosis_already_strong",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "already_strong",
+        "summary": "Fixture for already_strong.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_already_strong", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "already_strong"
+    },
+    {
+      "fixture_id": "diagnosis_other",
+      "source_turn_ref": "fixture:diagnosis_other",
+      "source_text": "Evidence anchor.",
+      "diagnosis": {
+        "category": "other",
+        "summary": "Fixture for other.",
+        "evidence": [{"turn_ref": "fixture:diagnosis_other", "quote": "Evidence anchor."}]
+      },
+      "expected_category": "other"
+    }
+  ]
+}

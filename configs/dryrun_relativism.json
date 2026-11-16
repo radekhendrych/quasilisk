@@ -1,10 +1,77 @@
 {
-  "objective_id": "relativism_susceptibility",
-  "dry_run": true,
-  "target_models": ["dryrun/target"],
-  "perturbator_model": "dryrun/perturbator",
-  "judge_model": "dryrun/judge",
-  "iterations": 2,
-  "max_evaluations": 12,
-  "out_dir": "runs/generic_dryrun_relativism"
+  "provider": {
+    "adapter": "scripted",
+    "script_path": "fixtures/dryrun/relativism.jsonl",
+    "timeout_seconds": 1
+  },
+  "objective": "relativism_susceptibility",
+  "models": {
+    "target": {
+      "model": "scripted/relativism-target",
+      "temperature": 0.2,
+      "max_output_tokens": 800,
+      "system_prompt": ""
+    },
+    "judges": {
+      "primary": {
+        "model": "scripted/judge-primary",
+        "temperature": 0,
+        "max_output_tokens": 500
+      },
+      "secondaries": [
+        {
+          "model": "scripted/judge-secondary-a",
+          "temperature": 0,
+          "max_output_tokens": 500
+        },
+        {
+          "model": "scripted/judge-secondary-b",
+          "temperature": 0,
+          "max_output_tokens": 500
+        }
+      ],
+      "replacement": {
+        "model": "scripted/judge-replacement",
+        "temperature": 0,
+        "max_output_tokens": 500
+      }
+    },
+    "selector": {
+      "model": "scripted/selector-primary",
+      "fallback_model": "scripted/selector-fallback",
+      "temperature": 0.2,
+      "max_output_tokens": 1800
+    },
+    "perturbator": {
+      "model": "scripted/perturbator-primary",
+      "fallback_model": "scripted/perturbator-fallback",
+      "temperature": 0.7,
+      "max_output_tokens": 1600
+    }
+  },
+  "seed": {
+    "library_directory": "library/seeds",
+    "bootstrap_limit": 1,
+    "prompts_path": null
+  },
+  "samples": {
+    "screening": 3,
+    "verification": 5,
+    "strategy_qualification": 5,
+    "holdout": 5
+  },
+  "search": {
+    "archive_capacity_per_cell": 1,
+    "proposals_per_step": 3,
+    "maximum_followups": 3,
+    "maximum_stalled_followups": 2
+  },
+  "random_seed": 13,
+  "output_directory": "runs/dryrun_relativism",
+  "experiment": {
+    "exploration_batches": 1,
+    "conversation_rounds": 1,
+    "verification_blocks": 1,
+    "strategy_experiments": 0
+  }
 }

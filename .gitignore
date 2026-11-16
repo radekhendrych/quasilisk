@@ -1,4 +1,57 @@
+# Python bytecode and test/tool caches
 __pycache__/
 *.py[cod]
-runs/
-configs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Local environments, credentials, and packaging output
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+build/
+dist/
+*.egg-info/
+
+# Local agent state
+.agents/
+.codex/
+/.local/
+/.config/gh/
+
+# Runtime evidence and rebuildable run artifacts
+runs/*
+!runs/.gitkeep
+
+# Rebuildable shared-library indexes and transaction working files
+library/.indexes.lock
+library/.calibration.lock
+library/.calibration.pending.json
+library/.calibration.pending.*.tmp
+library/.indexes.transaction.json
+library/*/index.json
+library/*/.index.json.*.new
+library/*/.index.json.*.rollback
+
+# Private evidence, exports, and generated study/report artifacts.
+/exports/
+/experiments/**
+!/experiments/**/
+!/experiments/**/*.py
+/reports/**
+!/reports/**/
+!/reports/**/*.py
+!/reports/**/*.mjs
+!/reports/**/*.js
+!/reports/**/*.css
+!/reports/**/*.svg
+/docs/frontend_prototype/preview-*.png
+*.log
+*.bundle

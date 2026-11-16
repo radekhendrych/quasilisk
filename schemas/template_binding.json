@@ -1,0 +1,470 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quasilisk.local/schemas/template_binding.json",
+  "title": "Quasilisk Template Binding",
+  "type": "object",
+  "properties": {
+    "binding": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "applicable",
+        "inapplicable"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BindingEvidence"
+      },
+      "minItems": 1,
+      "maxItems": 3
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contract": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BoundStrategy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "binding",
+    "status",
+    "evidence",
+    "reason",
+    "contract"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "DescriptorObject": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "BasisItem": {
+      "type": "object",
+      "properties": {
+        "use": {
+          "type": "string",
+          "enum": [
+            "continuation_anchor",
+            "recovery_anchor",
+            "corroboration",
+            "judge_concern",
+            "presentation_signal"
+          ]
+        },
+        "evidence_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reading": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "use",
+        "evidence_id",
+        "reading"
+      ],
+      "additionalProperties": false
+    },
+    "StrategyTarget": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "claim",
+            "premise",
+            "inference",
+            "conflict",
+            "preference",
+            "condition",
+            "commitment",
+            "application",
+            "other"
+          ]
+        },
+        "evidence_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "evidence_id",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "StrategyMove": {
+      "type": "object",
+      "properties": {
+        "act": {
+          "type": "string",
+          "enum": [
+            "recover_opening",
+            "complete_opening",
+            "apply_opening",
+            "overcome_objection",
+            "repair_grounded_gap",
+            "resolve_incoherence_forward"
+          ]
+        },
+        "target": {
+          "$ref": "#/$defs/StrategyTarget"
+        },
+        "descriptors": {
+          "$ref": "#/$defs/DescriptorObject"
+        },
+        "blueprint": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "act",
+        "target",
+        "descriptors",
+        "blueprint"
+      ],
+      "additionalProperties": false
+    },
+    "PreserveItem": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "premise",
+            "commitment",
+            "scope",
+            "meaning",
+            "branch_fact"
+          ]
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "statement",
+        "evidence_id"
+      ],
+      "additionalProperties": false
+    },
+    "TemplatePreserveItem": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "premise",
+            "commitment",
+            "scope",
+            "meaning",
+            "branch_fact"
+          ]
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "statement"
+      ],
+      "additionalProperties": false
+    },
+    "VariationInstruction": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "enum": [
+            "wording",
+            "tone_register",
+            "framing",
+            "structure",
+            "directness",
+            "specificity",
+            "example_analogy",
+            "premise_order",
+            "question_form",
+            "supporting_material"
+          ]
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "dimension",
+        "instruction"
+      ],
+      "additionalProperties": false
+    },
+    "SuccessTransition": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "additionalProperties": false
+    },
+    "StrategySuccess": {
+      "type": "object",
+      "properties": {
+        "transition": {
+          "$ref": "#/$defs/SuccessTransition"
+        },
+        "supports": {
+          "type": "string",
+          "minLength": 1
+        },
+        "falsifies": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "transition",
+        "supports",
+        "falsifies"
+      ],
+      "additionalProperties": false
+    },
+    "BoundStrategy": {
+      "type": "object",
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "recovery",
+            "repair",
+            "completion"
+          ]
+        },
+        "basis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BasisItem"
+          },
+          "minItems": 1
+        },
+        "move": {
+          "$ref": "#/$defs/StrategyMove"
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preserve": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PreserveItem"
+          },
+          "minItems": 1
+        },
+        "vary": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VariationInstruction"
+          },
+          "minItems": 1
+        },
+        "success": {
+          "$ref": "#/$defs/StrategySuccess"
+        }
+      },
+      "required": [
+        "purpose",
+        "basis",
+        "move",
+        "hypothesis",
+        "preserve",
+        "vary",
+        "success"
+      ],
+      "additionalProperties": false
+    },
+    "DiagnosisCategory": {
+      "type": "string",
+      "enum": [
+        "other"
+      ]
+    },
+    "TemplateApplicability": {
+      "type": "object",
+      "properties": {
+        "diagnosis": {
+          "$ref": "#/$defs/DiagnosisCategory"
+        },
+        "requires": {
+          "type": "string",
+          "minLength": 1
+        },
+        "excludes": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "diagnosis",
+        "requires",
+        "excludes"
+      ],
+      "additionalProperties": false
+    },
+    "TemplateMove": {
+      "type": "object",
+      "properties": {
+        "act": {
+          "type": "string",
+          "enum": [
+            "recover_opening",
+            "complete_opening",
+            "apply_opening",
+            "overcome_objection",
+            "repair_grounded_gap",
+            "resolve_incoherence_forward"
+          ]
+        },
+        "target_kind": {
+          "type": "string",
+          "enum": [
+            "claim",
+            "premise",
+            "inference",
+            "conflict",
+            "preference",
+            "condition",
+            "commitment",
+            "application",
+            "other"
+          ]
+        },
+        "descriptors": {
+          "$ref": "#/$defs/DescriptorObject"
+        },
+        "blueprint": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "act",
+        "target_kind",
+        "descriptors",
+        "blueprint"
+      ],
+      "additionalProperties": false
+    },
+    "StrategyTemplate": {
+      "type": "object",
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "recovery",
+            "repair",
+            "completion"
+          ]
+        },
+        "applicability": {
+          "$ref": "#/$defs/TemplateApplicability"
+        },
+        "move": {
+          "$ref": "#/$defs/TemplateMove"
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preserve": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TemplatePreserveItem"
+          },
+          "minItems": 1
+        },
+        "vary": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VariationInstruction"
+          },
+          "minItems": 1
+        },
+        "success": {
+          "$ref": "#/$defs/StrategySuccess"
+        }
+      },
+      "required": [
+        "purpose",
+        "applicability",
+        "move",
+        "hypothesis",
+        "preserve",
+        "vary",
+        "success"
+      ],
+      "additionalProperties": false
+    },
+    "BindingEvidence": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "evidence_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
