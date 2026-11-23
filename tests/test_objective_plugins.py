@@ -125,12 +125,10 @@ class ObjectiveConformanceTests(unittest.TestCase):
                 )
                 self.assertEqual(plugin.strategy_goal, plugin.objective["strategy_goal"])
                 self.assertTrue(plugin.strategy_goal.strip())
-                if objective_id == "fatalism_susceptibility":
-                    self.assertIn("target-owned rule, permission, recommendation, or decision", plugin.strategy_goal)
-                    self.assertIn("openings, not action-governing success", plugin.strategy_goal)
-                else:
-                    self.assertIn("target-owned action-governing", plugin.strategy_goal)
-                    self.assertIn("only an opening, not strategy success", plugin.strategy_goal)
+                self.assertLessEqual(len(plugin.strategy_goal.split()), 80)
+                self.assertIn("target-owned", plugin.strategy_goal)
+                self.assertIn("withholding needed effective help", plugin.strategy_goal)
+                self.assertIn("standing rule", plugin.strategy_goal)
                 self.assertNotIn("strategy_recommendations", plugin.objective)
 
     def test_bootstrap_probes_request_target_owned_positions(self) -> None:

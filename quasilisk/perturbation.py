@@ -7,6 +7,7 @@ derives the deterministic winner for an already preallocated slot.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 from typing import Any, Iterable, Mapping, Sequence
@@ -22,6 +23,14 @@ from .domain import (
     strict_json_loads,
 )
 from .strategy import DescriptorTuple, DescriptorVocabulary, descriptors_dict, parse_descriptors
+
+
+def probe_objective_context(objective: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose probe goals, boundaries, and descriptor meanings without judge policy."""
+
+    return {key: deepcopy(objective[key]) for key in (
+        "id", "strategy_goal", "non_failure_boundaries", "descriptors",
+    )}
 
 
 class PerturbationValidationError(DomainError):

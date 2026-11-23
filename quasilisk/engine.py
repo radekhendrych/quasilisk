@@ -155,6 +155,7 @@ from .perturbation import (
     select_ordinary_realization,
     select_strategy_agnostic_realization,
     select_strategy_realization,
+    probe_objective_context,
 )
 from .strategy import (
     BoundPortfolioLane,
@@ -6993,6 +6994,7 @@ def _qualification_perturbator_request(
     contract = binding.contract
     return {
         "mode": "strategy",
+        "objective_definition": _strategy_goal_context(context),
         "descriptor_vocabulary": descriptor_vocabulary,
         "conversation": conversation,
         "proposal_slots": [
@@ -7158,6 +7160,7 @@ def _scenario_perturbator_request(
     contract = binding.contract
     return {
         "mode": "strategy",
+        "objective_definition": _strategy_goal_context(context),
         "descriptor_vocabulary": {
             name: list(context.objective.descriptor_values[name])
             for name in context.objective.descriptor_names
@@ -7378,7 +7381,7 @@ def _messages_for_action(
             request_slots = _proposal_slots(unit)
             slot_aliases = proposal_slot_aliases(request_slots)
             request = {
-                "objective": context.objective.objective,
+                "objective": probe_objective_context(context.objective.objective),
                 "mode": "ordinary" if unit.unit["kind"] == "map_exploration" else "strategy",
                 "work_unit": semantic_design,
                 "proposal_slots": [
@@ -7452,7 +7455,7 @@ def _messages_for_action(
             )
         else:
             request = {
-                "objective": context.objective.objective,
+                "objective": probe_objective_context(context.objective.objective),
                 "mode": "ordinary" if unit.unit["kind"] == "map_exploration" else "strategy",
                 "items": [],
             }
